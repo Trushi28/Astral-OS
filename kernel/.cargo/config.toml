@@ -1,0 +1,10 @@
+[build]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-astral]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "panic=abort",
+]
+

@@ -1,0 +1,42 @@
+# --- Rust ---
+/kernel/target/
+/kernel/Cargo.lock        # optional: keep if you want reproducible builds
+
+# Rust build output fragments
+**/*.rlib
+**/*.rmeta
+
+# --- Zig ---
+/memory/zig-cache/
+/memory/zig-out/
+
+# --- Limine build outputs ---
+limine/
+limine/*.bin
+limine/*.sys
+limine/*.o
+limine/*.efi
+limine/*.iso
+
+# but keep source files
+!limine/Makefile
+!limine/*.c
+!limine/*.h
+
+# --- Bootloader outputs ---
+*.iso
+*.img
+
+# --- Fonts or generated assets ---
+*.bin              # only generated ones, not source assets
+!**/font.ttf       # keep source ttf if needed
+
+# --- Editor / OS clutter ---
+*.swp
+*.swo
+*.DS_Store
+*.log
+
+# --- Cargo build dirs globally ---
+target/
+
