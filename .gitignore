@@ -17,7 +17,7 @@ limine/*.sys
 limine/*.o
 limine/*.efi
 limine/*.iso
-
+iso_root/
 # but keep source files
 !limine/Makefile
 !limine/*.c
