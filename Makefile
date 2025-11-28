@@ -147,7 +147,6 @@ clean:
 	rm -rf iso_root astral.iso qemu.log
 	@# Handle stuck mounts
 	@if mountpoint -q mnt 2>/dev/null; then sudo umount mnt; fi
-	@sudo rm -rf mnt 2>/dev/null || rm -rf mnt 2>/dev/null || true
 	@echo "==> Done"
 
 distclean: clean

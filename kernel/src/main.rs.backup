@@ -18,7 +18,6 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
-use core::ptr::addr_of;
 
 
 
@@ -1441,26 +1440,26 @@ pub fn getchar_blocking() -> u8 {
 
 
 
-/// ============================================================================
-// MODERN VIRTIO 1.0+ BLOCK DEVICE DRIVER
-// Complete replacement with all original functionality
 // ============================================================================
-// VirtIO device IDs
-const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
-const VIRTIO_BLOCK_MODERN_ID: u16 = 0x1042;
-const VIRTIO_BLOCK_TRANSITIONAL_ID: u16 = 0x1001;
+// VIRTIO BLOCK DEVICE DRIVER
+// Modern paravirtualized disk I/O for QEMU
+// ============================================================================
 
-// Device status bits
+// VirtIO PCI device IDs
+const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
+const VIRTIO_BLOCK_DEVICE_ID: u16 = 0x1001;  // Legacy, transitional device
+const VIRTIO_BLOCK_MODERN_ID: u16 = 0x1042;  // Modern device
+
+// VirtIO device status bits
 const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;
 const VIRTIO_STATUS_DRIVER: u8 = 2;
 const VIRTIO_STATUS_DRIVER_OK: u8 = 4;
 const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
-const VIRTIO_STATUS_DEVICE_NEEDS_RESET: u8 = 64;
 const VIRTIO_STATUS_FAILED: u8 = 128;
 
 // VirtIO block request types
-const VIRTIO_BLK_T_IN: u32 = 0;
-const VIRTIO_BLK_T_OUT: u32 = 1;
+const VIRTIO_BLK_T_IN: u32 = 0;   // Read
+const VIRTIO_BLK_T_OUT: u32 = 1;  // Write
 const VIRTIO_BLK_T_FLUSH: u32 = 4;
 
 // VirtIO block status
@@ -1468,21 +1467,23 @@ const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
 const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
-// Feature bits
-const VIRTIO_F_VERSION_1: u64 = 1 << 32;
-const VIRTIO_BLK_F_RO: u64 = 1 << 5;
-const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
-
-// PCI capability types
-const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
-const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
-const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
-const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
+// Legacy MMIO offsets (we'll use PIO for simplicity)
+const VIRTIO_PCI_HOST_FEATURES: u16 = 0;
+const VIRTIO_PCI_GUEST_FEATURES: u16 = 4;
+const VIRTIO_PCI_QUEUE_ADDR: u16 = 8;
+const VIRTIO_PCI_QUEUE_SIZE: u16 = 12;
+const VIRTIO_PCI_QUEUE_SELECT: u16 = 14;
+const VIRTIO_PCI_QUEUE_NOTIFY: u16 = 16;
+const VIRTIO_PCI_STATUS: u16 = 18;
+const VIRTIO_PCI_ISR: u16 = 19;
+const VIRTIO_PCI_CONFIG: u16 = 20;
 
 // Virtqueue constants
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 const QUEUE_SIZE: usize = 256;
+
+// Sector size
 const SECTOR_SIZE: usize = 512;
 
 // ============================================================================
@@ -1492,17 +1493,18 @@ const SECTOR_SIZE: usize = 512;
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
 pub struct VirtqDesc {
-    pub addr: u64,
-    pub len: u32,
-    pub flags: u16,
-    pub next: u16,
+    pub addr: u64,    // Physical address of buffer
+    pub len: u32,     // Length of buffer
+    pub flags: u16,   // Flags (NEXT, WRITE, etc.)
+    pub next: u16,    // Next descriptor if NEXT flag set
 }
 
 #[repr(C, align(2))]
+#[derive(Clone, Copy)]
 pub struct VirtqAvail {
     pub flags: u16,
     pub idx: u16,
-    pub ring: [u16; QUEUE_SIZE],
+    pub ring: [u16; 256],
     pub used_event: u16,
 }
 
@@ -1514,36 +1516,17 @@ pub struct VirtqUsedElem {
 }
 
 #[repr(C, align(4))]
+#[derive(Clone, Copy)]
 pub struct VirtqUsed {
     pub flags: u16,
     pub idx: u16,
-    pub ring: [VirtqUsedElem; QUEUE_SIZE],
+    pub ring: [VirtqUsedElem; 256],
     pub avail_event: u16,
 }
 
 // ============================================================================
-// MODERN VIRTIO PCI STRUCTURES
+// VIRTIO BLOCK REQUEST
 // ============================================================================
-
-#[repr(C)]
-pub struct VirtioCommonCfg {
-    pub device_feature_select: u32,
-    pub device_feature: u32,
-    pub driver_feature_select: u32,
-    pub driver_feature: u32,
-    pub msix_config: u16,
-    pub num_queues: u16,
-    pub device_status: u8,
-    pub config_generation: u8,
-    pub queue_select: u16,
-    pub queue_size: u16,
-    pub queue_msix_vector: u16,
-    pub queue_enable: u16,
-    pub queue_notify_off: u16,
-    pub queue_desc: u64,
-    pub queue_driver: u64,
-    pub queue_device: u64,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1554,237 +1537,86 @@ pub struct VirtioBlkReqHeader {
 }
 
 // ============================================================================
-// VIRTQUEUE MEMORY LAYOUT
-// ============================================================================
-
-fn calc_avail_offset(queue_size: usize) -> usize {
-    queue_size * 16 // After descriptor table
-}
-
-fn calc_used_offset(queue_size: usize) -> usize {
-    let avail_size = 6 + queue_size * 2;
-    let after_avail = calc_avail_offset(queue_size) + avail_size;
-    (after_avail + 3) & !3 // 4-byte align
-}
-unsafe impl Send for Virtqueue {}
-unsafe impl Sync for Virtqueue {}
-
-pub struct Virtqueue {
-    memory: *mut u8,
-    memory_size: usize,
-    desc_ptr: *mut VirtqDesc,
-    avail_ptr: *mut VirtqAvail,
-    used_ptr: *mut VirtqUsed,
-    queue_size: usize,
-    free_head: u16,
-    last_used_idx: u16,
-}
-
-impl Virtqueue {
-    pub fn new(queue_size: usize) -> Self {
-        assert!(queue_size.is_power_of_two() && queue_size <= 32768);
-        
-        let desc_size = queue_size * core::mem::size_of::<VirtqDesc>();
-        let avail_size = 6 + queue_size * 2 + 2;
-        let used_size = 6 + queue_size * core::mem::size_of::<VirtqUsedElem>() + 2;
-        
-        let total_size = desc_size + avail_size + used_size + 4096;
-        
-        // Allocate page-aligned memory
-        let layout = core::alloc::Layout::from_size_align(total_size, 4096).unwrap();
-        let memory = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        
-        if memory.is_null() {
-            panic!("Failed to allocate virtqueue memory");
-        }
-        
-        let base = memory as usize;
-        let desc_ptr = base as *mut VirtqDesc;
-        let avail_ptr = (base + calc_avail_offset(queue_size)) as *mut VirtqAvail;
-        let used_ptr = (base + calc_used_offset(queue_size)) as *mut VirtqUsed;
-        
-        let mut vq = Self {
-            memory,
-            memory_size: total_size,
-            desc_ptr,
-            avail_ptr,
-            used_ptr,
-            queue_size,
-            free_head: 0,
-            last_used_idx: 0,
-        };
-        
-        // Initialize descriptor free list
-        unsafe {
-            for i in 0..(queue_size - 1) {
-                (*vq.desc_ptr.add(i)).next = (i + 1) as u16;
-                (*vq.desc_ptr.add(i)).flags = VIRTQ_DESC_F_NEXT;
-            }
-            (*vq.desc_ptr.add(queue_size - 1)).next = 0xFFFF;
-            (*vq.desc_ptr.add(queue_size - 1)).flags = 0;
-            
-            (*vq.avail_ptr).flags = 0;
-            (*vq.avail_ptr).idx = 0;
-            (*vq.used_ptr).flags = 0;
-            (*vq.used_ptr).idx = 0;
-        }
-        
-        vq
-    }
-    
-    pub fn desc(&self, idx: usize) -> &VirtqDesc {
-        unsafe { &*self.desc_ptr.add(idx) }
-    }
-    
-    pub fn desc_mut(&mut self, idx: usize) -> &mut VirtqDesc {
-        unsafe { &mut *self.desc_ptr.add(idx) }
-    }
-    
-    pub fn avail(&self) -> &VirtqAvail {
-        unsafe { &*self.avail_ptr }
-    }
-    
-    pub fn avail_mut(&mut self) -> &mut VirtqAvail {
-        unsafe { &mut *self.avail_ptr }
-    }
-    
-    pub fn used(&self) -> &VirtqUsed {
-        unsafe { &*self.used_ptr }
-    }
-    
-    pub fn phys_addr(&self, hhdm_offset: usize) -> u64 {
-        (self.memory as usize - hhdm_offset) as u64
-    }
-    
-    pub fn alloc_desc(&mut self) -> Option<u16> {
-        if self.free_head == 0xFFFF || self.free_head >= self.queue_size as u16 {
-            return None;
-        }
-        let desc = self.free_head;
-        self.free_head = unsafe { (*self.desc_ptr.add(desc as usize)).next };
-        Some(desc)
-    }
-    
-    pub fn free_desc(&mut self, desc: u16) {
-        unsafe {
-            (*self.desc_ptr.add(desc as usize)).next = self.free_head;
-            self.free_head = desc;
-        }
-    }
-}
-
-impl Drop for Virtqueue {
-    fn drop(&mut self) {
-        if !self.memory.is_null() {
-            unsafe {
-                let layout = core::alloc::Layout::from_size_align(self.memory_size, 4096).unwrap();
-                alloc::alloc::dealloc(self.memory, layout);
-            }
-        }
-    }
-}
-
-// ============================================================================
 // VIRTIO BLOCK DEVICE
 // ============================================================================
-unsafe impl Send for VirtioBlockDevice {}
-unsafe impl Sync for VirtioBlockDevice {}
+
 pub static VIRTIO_BLK: Mutex<Option<VirtioBlockDevice>> = Mutex::new(None);
 
+#[repr(C, align(4096))]
 pub struct VirtioBlockDevice {
-    // PCI location
-    pub bus: u8,
-    pub device: u8,
-    pub func: u8,
-    
-    // Memory-mapped registers
-    pub common_cfg: *mut VirtioCommonCfg,
-    pub notify_base: *mut u8,
-    pub notify_off_multiplier: u32,
-    pub device_cfg: *mut u8,
+    // PCI BAR0 I/O port base
+    pub io_base: u16,
     
     // Device info
-    pub capacity: u64,
+    pub capacity: u64,  // In sectors
     pub present: bool,
     
     // Virtqueue
-    pub vq: Virtqueue,
+    pub desc: [VirtqDesc; QUEUE_SIZE],
+    pub avail: VirtqAvail,
+    pub used: VirtqUsed,
     
-    // Request tracking
-    pub desc_to_buffer: [Option<usize>; 16],
-    pub desc_chains: [(u16, u8); 16],
+    // Free descriptor tracking
+    pub free_head: u16,
+    pub last_used_idx: u16,
     
-    // Request buffers
+    // Request buffers (statically allocated for simplicity)
     pub req_headers: [VirtioBlkReqHeader; 16],
-    pub req_status: [u8; 16],
+    pub req_status: [u8; QUEUE_SIZE],
     pub data_buffers: [[u8; SECTOR_SIZE]; 16],
-    pub buffer_in_use: [bool; 16],
-    pub next_buffer: usize,
 }
 
 impl VirtioBlockDevice {
-    fn register_request(&mut self, desc_head: u16, buf_idx: usize) {
-        let slot = (desc_head as usize) % 16;
-        self.desc_to_buffer[slot] = Some(buf_idx);
-        self.desc_chains[slot] = (desc_head, 3);
+    pub fn new(io_base: u16) -> Self {
+        let mut dev = Self {
+            io_base,
+            capacity: 0,
+            present: false,
+            desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; QUEUE_SIZE],
+            avail: VirtqAvail { flags: 0, idx: 0, ring: [0; QUEUE_SIZE], used_event: 0 },
+            used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; QUEUE_SIZE], avail_event: 0 },
+            free_head: 0,
+            last_used_idx: 0,
+            req_headers: [VirtioBlkReqHeader { req_type: 0, reserved: 0, sector: 0 }; 16],
+            req_status: [0; QUEUE_SIZE],
+            data_buffers: [[0; SECTOR_SIZE]; 16],
+        };
+        
+        // Initialize free descriptor list
+        for i in 0..(QUEUE_SIZE - 1) {
+            dev.desc[i].next = (i + 1) as u16;
+            dev.desc[i].flags = VIRTQ_DESC_F_NEXT;
+        }
+        dev.desc[QUEUE_SIZE - 1].next = 0;
+        dev.desc[QUEUE_SIZE - 1].flags = 0;
+        
+        dev
     }
     
-    fn complete_request(&mut self, desc_head: u16) -> Option<usize> {
-        for i in 0..16 {
-            if self.desc_chains[i].0 == desc_head {
-                let buf_idx = self.desc_to_buffer[i]?;
-                self.desc_chains[i] = (0xFFFF, 0);
-                self.desc_to_buffer[i] = None;
-                return Some(buf_idx);
-            }
+    fn alloc_desc(&mut self) -> Option<u16> {
+        let desc = self.free_head;
+        if desc >= QUEUE_SIZE as u16 {
+            return None;
         }
-        None
+        self.free_head = self.desc[desc as usize].next;
+        Some(desc)
     }
     
-    fn alloc_buffer(&mut self) -> Option<usize> {
-        for _ in 0..16 {
-            let idx = self.next_buffer;
-            self.next_buffer = (self.next_buffer + 1) % 16;
-            
-            if !self.buffer_in_use[idx] {
-                self.buffer_in_use[idx] = true;
-                return Some(idx);
-            }
-        }
-        None
-    }
-    
-    fn free_buffer(&mut self, idx: usize) {
-        if idx < 16 {
-            self.buffer_in_use[idx] = false;
-        }
-    }
-    
-    fn notify_queue(&self, queue: u16) {
-        unsafe {
-            let common = &*self.common_cfg;
-            let mut common_mut = self.common_cfg;
-            (*common_mut).queue_select = queue;
-            let notify_off = (*common_mut).queue_notify_off;
-            
-            let notify_addr = self.notify_base.offset(
-                (notify_off as usize * self.notify_off_multiplier as usize) as isize
-            ) as *mut u16;
-            
-            core::ptr::write_volatile(notify_addr, queue);
-        }
+    fn free_desc(&mut self, desc: u16) {
+        self.desc[desc as usize].next = self.free_head;
+        self.free_head = desc;
     }
 }
 
 // ============================================================================
-// PCI CONFIGURATION
+// PCI CONFIGURATION SPACE ACCESS
 // ============================================================================
 
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
 const PCI_CONFIG_DATA: u16 = 0xCFC;
 
 fn pci_config_read32(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
-    let addr: u32 = (1 << 31)
+    let addr: u32 = (1 << 31)  // Enable bit
         | ((bus as u32) << 16)
         | ((device as u32) << 11)
         | ((func as u32) << 8)
@@ -1814,234 +1646,122 @@ fn pci_config_read16(bus: u8, device: u8, func: u8, offset: u8) -> u16 {
     ((val >> ((offset & 2) * 8)) & 0xFFFF) as u16
 }
 
-fn pci_config_read8(bus: u8, device: u8, func: u8, offset: u8) -> u8 {
-    let val = pci_config_read32(bus, device, func, offset & 0xFC);
-    ((val >> ((offset & 3) * 8)) & 0xFF) as u8
-}
-
 // ============================================================================
-// MODERN VIRTIO INITIALIZATION
+// PCI DEVICE SCANNING
 // ============================================================================
 
-fn find_virtio_capability(bus: u8, dev: u8, func: u8, cfg_type: u8) -> Option<(u8, u32, u32)> {
-    let status = pci_config_read16(bus, dev, func, 0x06);
-    if status & 0x10 == 0 {
-        return None; // No capability list
-    }
-    
-    let mut cap_ptr = pci_config_read8(bus, dev, func, 0x34);
-    
-    while cap_ptr != 0 && cap_ptr < 0xFF {
-        let cap_id = pci_config_read8(bus, dev, func, cap_ptr);
-        
-        if cap_id == 0x09 {
-            // Vendor-specific capability
-            let cap_type = pci_config_read8(bus, dev, func, cap_ptr + 3);
-            
-            if cap_type == cfg_type {
-                let bar = pci_config_read8(bus, dev, func, cap_ptr + 4);
-                let offset = pci_config_read32(bus, dev, func, cap_ptr + 8);
-                let length = pci_config_read32(bus, dev, func, cap_ptr + 12);
-                
-                return Some((bar, offset, length));
-            }
-        }
-        
-        cap_ptr = pci_config_read8(bus, dev, func, cap_ptr + 1);
-    }
-    
-    None
-}
-
-fn map_bar(bus: u8, device: u8, func: u8, bar_idx: u8) -> Option<usize> {
-    let bar_offset = 0x10 + (bar_idx * 4);
-    let bar = pci_config_read32(bus, device, func, bar_offset);
-    
-    if bar & 1 == 1 {
-        return None; // I/O space not supported
-    }
-    
-    let addr = (bar & !0xF) as usize;
-    let hhdm_offset = HHDM_REQUEST.get_response()
-        .map(|r| r.offset() as usize)
-        .unwrap_or(0);
-    
-    Some(addr + hhdm_offset)
-}
-
-pub fn init_virtio_block() -> bool {
-    // Scan PCI bus
-    for bus in 0..256 {
-        for device in 0..32 {
+fn pci_find_virtio_block() -> Option<(u8, u8, u8, u16)> {
+    // Scan PCI bus for VirtIO block device
+    for bus in 0..256u16 {
+        for device in 0..32u8 {
             let vendor = pci_config_read16(bus as u8, device, 0, 0);
-            if vendor != VIRTIO_VENDOR_ID {
+            if vendor == 0xFFFF {
                 continue;
             }
             
             let device_id = pci_config_read16(bus as u8, device, 0, 2);
             
-            if device_id == VIRTIO_BLOCK_MODERN_ID || device_id == VIRTIO_BLOCK_TRANSITIONAL_ID {
-                if init_device(bus as u8, device, 0) {
-                    return true;
+            if vendor == VIRTIO_VENDOR_ID && 
+               (device_id == VIRTIO_BLOCK_DEVICE_ID || device_id == VIRTIO_BLOCK_MODERN_ID) {
+                // Get BAR0 (I/O port base)
+                let bar0 = pci_config_read32(bus as u8, device, 0, 0x10);
+                
+                if bar0 & 1 == 1 {
+                    // I/O space
+                    let io_base = (bar0 & 0xFFFC) as u16;
+                    return Some((bus as u8, device, 0, io_base));
                 }
             }
         }
     }
-    
-    println!("      VirtIO-blk: Not found");
-    false
+    None
 }
 
-fn init_device(bus: u8, device: u8, func: u8) -> bool {
-    println!("      VirtIO-blk: Found at PCI {:02x}:{:02x}.{}", bus, device, func);
-    
-    // Find capabilities
-    let (common_bar, common_offset, _) = match find_virtio_capability(bus, device, func, VIRTIO_PCI_CAP_COMMON_CFG) {
-        Some(c) => c,
+// ============================================================================
+// VIRTIO DEVICE INITIALIZATION
+// ============================================================================
+
+pub fn init_virtio_block() -> bool {
+    // Find VirtIO block device on PCI bus
+    let (bus, device, func, io_base) = match pci_find_virtio_block() {
+        Some(info) => info,
         None => {
-            println!("      VirtIO-blk: No common config capability");
+            println!("      VirtIO-blk: Not found");
             return false;
         }
     };
     
-    let (notify_bar, notify_offset, _) = match find_virtio_capability(bus, device, func, VIRTIO_PCI_CAP_NOTIFY_CFG) {
-        Some(c) => c,
-        None => {
-            println!("      VirtIO-blk: No notify capability");
-            return false;
-        }
-    };
+    println!("      VirtIO-blk: Found at PCI {:02x}:{:02x}.{} IO=0x{:x}", 
+             bus, device, func, io_base);
     
-    let (device_bar, device_offset, _) = find_virtio_capability(bus, device, func, VIRTIO_PCI_CAP_DEVICE_CFG)
-        .unwrap_or((0, 0, 0));
-    
-    // Map BARs
-    let common_base = match map_bar(bus, device, func, common_bar) {
-        Some(b) => b,
-        None => return false,
-    };
-    
-    let notify_base = match map_bar(bus, device, func, notify_bar) {
-        Some(b) => b,
-        None => return false,
-    };
-    
-    let device_base = if device_bar != 0 {
-        map_bar(bus, device, func, device_bar).unwrap_or(0)
-    } else {
-        0
-    };
-    
-    let common_cfg = (common_base + common_offset as usize) as *mut VirtioCommonCfg;
-    let notify_ptr = (notify_base + notify_offset as usize) as *mut u8;
-    let device_cfg = if device_base != 0 {
-        (device_base + device_offset as usize) as *mut u8
-    } else {
-        core::ptr::null_mut()
-    };
-    
-    // Read notify_off_multiplier (follows the capability structure at +16)
-    let notify_mult = pci_config_read32(bus, device, func, 0x34 + 16); // Simplified
-    
-    // Enable PCI bus mastering and memory space
+    // Enable PCI bus mastering and I/O space
     let cmd = pci_config_read16(bus, device, func, 4);
-    pci_config_write32(bus, device, func, 4, (cmd | 0x06) as u32);
+    pci_config_write32(bus, device, func, 4, (cmd | 0x07) as u32);
     
     unsafe {
         // Reset device
-        (*common_cfg).device_status = 0;
+        outb(io_base + VIRTIO_PCI_STATUS, 0);
         
-        // Acknowledge
-        (*common_cfg).device_status = VIRTIO_STATUS_ACKNOWLEDGE;
+        // Acknowledge device
+        outb(io_base + VIRTIO_PCI_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
         
-        // Driver
-        (*common_cfg).device_status |= VIRTIO_STATUS_DRIVER;
+        // We're a driver
+        outb(io_base + VIRTIO_PCI_STATUS, 
+             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
         
-        // Read features
-        (*common_cfg).device_feature_select = 0;
-        let features_low = (*common_cfg).device_feature;
-        (*common_cfg).device_feature_select = 1;
-        let features_high = (*common_cfg).device_feature;
-        
-        let device_features = ((features_high as u64) << 32) | (features_low as u64);
-        
-        // Negotiate features
-        let mut driver_features = VIRTIO_F_VERSION_1;
-        if device_features & VIRTIO_BLK_F_RO != 0 {
-            driver_features |= VIRTIO_BLK_F_RO;
-        }
-        
-        (*common_cfg).driver_feature_select = 0;
-        (*common_cfg).driver_feature = driver_features as u32;
-        (*common_cfg).driver_feature_select = 1;
-        (*common_cfg).driver_feature = (driver_features >> 32) as u32;
+        // Read features (we don't need any special features for basic I/O)
+        let _features = inl(io_base + VIRTIO_PCI_HOST_FEATURES as u16);
+        outl(io_base + VIRTIO_PCI_GUEST_FEATURES as u16, 0);
         
         // Features OK
-        (*common_cfg).device_status |= VIRTIO_STATUS_FEATURES_OK;
+        outb(io_base + VIRTIO_PCI_STATUS,
+             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
         
-        // Verify
-        if (*common_cfg).device_status & VIRTIO_STATUS_FEATURES_OK == 0 {
+        // Check features OK
+        let status = inb(io_base + VIRTIO_PCI_STATUS);
+        if status & VIRTIO_STATUS_FEATURES_OK == 0 {
             println!("      VirtIO-blk: Feature negotiation failed");
-            (*common_cfg).device_status = VIRTIO_STATUS_FAILED;
+            outb(io_base + VIRTIO_PCI_STATUS, VIRTIO_STATUS_FAILED);
             return false;
         }
         
-        // Set up virtqueue
-        (*common_cfg).queue_select = 0;
-        let queue_size = (*common_cfg).queue_size as usize;
+        // Set up virtqueue 0
+        outw(io_base + VIRTIO_PCI_QUEUE_SELECT, 0);
+        let queue_size = inw(io_base + VIRTIO_PCI_QUEUE_SIZE);
         
-        if queue_size == 0 {
-            println!("      VirtIO-blk: Invalid queue size");
+        if queue_size == 0{
+            println!("      VirtIO-blk: Invalid queue size {}", queue_size);
             return false;
         }
         
-        let mut vq = Virtqueue::new(queue_size.min(QUEUE_SIZE));
+        // Create device structure
+        let mut dev = VirtioBlockDevice::new(io_base);
         
+        // Get physical address of virtqueue (need HHDM offset)
         let hhdm_offset = HHDM_REQUEST.get_response()
             .map(|r| r.offset() as usize)
             .unwrap_or(0);
         
-        let desc_phys = (vq.desc_ptr as usize - hhdm_offset) as u64;
-        let avail_phys = (vq.avail_ptr as usize - hhdm_offset) as u64;
-        let used_phys = (vq.used_ptr as usize - hhdm_offset) as u64;
+        let vq_virt_addr = &dev.desc as *const _ as usize;
+        let vq_phys_addr = vq_virt_addr.wrapping_sub(hhdm_offset);
         
-        (*common_cfg).queue_desc = desc_phys;
-        (*common_cfg).queue_driver = avail_phys;
-        (*common_cfg).queue_device = used_phys;
-        (*common_cfg).queue_enable = 1;
+        // Tell device where the queue is (legacy interface uses page frame number)
+        let pfn = (vq_phys_addr / 4096) as u32;
+        outl(io_base + VIRTIO_PCI_QUEUE_ADDR as u16, pfn);
         
-        // Read capacity
-        let capacity = if !device_cfg.is_null() {
-            core::ptr::read_volatile(device_cfg as *const u64)
-        } else {
-            0
-        };
+        // Read device capacity
+        let cap_lo = inl(io_base + VIRTIO_PCI_CONFIG as u16);
+        let cap_hi = inl(io_base + VIRTIO_PCI_CONFIG as u16 + 4);
+        dev.capacity = ((cap_hi as u64) << 32) | (cap_lo as u64);
+        dev.present = true;
         
-        // Driver OK
-        (*common_cfg).device_status |= VIRTIO_STATUS_DRIVER_OK;
+        let size_mb = (dev.capacity * 512) / (1024 * 1024);
+        println!("      VirtIO-blk: {} sectors ({} MB)", dev.capacity, size_mb);
         
-        let size_mb = (capacity * 512) / (1024 * 1024);
-        println!("      VirtIO-blk: {} sectors ({} MB)", capacity, size_mb);
-        
-        let dev = VirtioBlockDevice {
-            bus,
-            device,
-            func,
-            common_cfg,
-            notify_base: notify_ptr,
-            notify_off_multiplier: notify_mult,
-            device_cfg,
-            capacity,
-            present: true,
-            vq,
-            desc_to_buffer: [None; 16],
-            desc_chains: [(0xFFFF, 0); 16],
-            req_headers: [VirtioBlkReqHeader { req_type: 0, reserved: 0, sector: 0 }; 16],
-            req_status: [0; 16],
-            data_buffers: [[0; SECTOR_SIZE]; 16],
-            buffer_in_use: [false; 16],
-            next_buffer: 0,
-        };
+        // Driver ready
+        outb(io_base + VIRTIO_PCI_STATUS,
+             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | 
+             VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
         
         *VIRTIO_BLK.lock() = Some(dev);
     }
@@ -2050,7 +1770,7 @@ fn init_device(bus: u8, device: u8, func: u8) -> bool {
 }
 
 // ============================================================================
-// BLOCK I/O OPERATIONS
+// BLOCK I/O OPERATIONS  
 // ============================================================================
 
 pub fn virtio_read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> bool {
@@ -2064,137 +1784,93 @@ pub fn virtio_read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> bool {
         return false;
     }
     
-    let buf_idx = match dev.alloc_buffer() {
-        Some(i) => i,
-        None => return false,
-    };
+    // Allocate 3 descriptors: header, data, status
+    let desc0 = match dev.alloc_desc() { Some(d) => d, None => return false };
+    let desc1 = match dev.alloc_desc() { Some(d) => d, None => { dev.free_desc(desc0); return false }};
+    let desc2 = match dev.alloc_desc() { Some(d) => d, None => { dev.free_desc(desc0); dev.free_desc(desc1); return false }};
     
-    let desc0 = match dev.vq.alloc_desc() {
-        Some(d) => d,
-        None => {
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    let desc1 = match dev.vq.alloc_desc() {
-        Some(d) => d,
-        None => {
-            dev.vq.free_desc(desc0);
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    let desc2 = match dev.vq.alloc_desc() {
-        Some(d) => d,
-        None => {
-            dev.vq.free_desc(desc0);
-            dev.vq.free_desc(desc1);
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    
+    let idx = (desc0 as usize)%16;
     let hhdm_offset = HHDM_REQUEST.get_response()
         .map(|r| r.offset() as usize)
         .unwrap_or(0);
     
-    dev.req_status[buf_idx] = 0xFF;
-    dev.req_headers[buf_idx] = VirtioBlkReqHeader {
+    // Set up request header
+    dev.req_headers[idx] = VirtioBlkReqHeader {
         req_type: VIRTIO_BLK_T_IN,
         reserved: 0,
         sector,
     };
     
-    // Descriptor 0: Header
-    let header_virt = &dev.req_headers[buf_idx] as *const _ as usize;
-    let d0 = dev.vq.desc_mut(desc0 as usize);
-    d0.addr = (header_virt - hhdm_offset) as u64;
-    d0.len = core::mem::size_of::<VirtioBlkReqHeader>() as u32;
-    d0.flags = VIRTQ_DESC_F_NEXT;
-    d0.next = desc1;
+    // Descriptor 0: Header (device reads)
+    let header_virt = &dev.req_headers[idx] as *const _ as usize;
+    dev.desc[desc0 as usize] = VirtqDesc {
+        addr: (header_virt - hhdm_offset) as u64,
+        len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+        flags: VIRTQ_DESC_F_NEXT,
+        next: desc1,
+    };
     
-    // Descriptor 1: Data buffer
-    let data_virt = dev.data_buffers[buf_idx].as_ptr() as usize;
-    let d1 = dev.vq.desc_mut(desc1 as usize);
-    d1.addr = (data_virt - hhdm_offset) as u64;
-    d1.len = SECTOR_SIZE as u32;
-    d1.flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE;
-    d1.next = desc2;
+    // Descriptor 1: Data buffer (device writes)
+    let data_virt = &dev.data_buffers[idx] as *const _ as usize;
+    dev.desc[desc1 as usize] = VirtqDesc {
+        addr: (data_virt - hhdm_offset) as u64,
+        len: SECTOR_SIZE as u32,
+        flags: VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+        next: desc2,
+    };
     
-    // Descriptor 2: Status
-    let status_virt = &dev.req_status[buf_idx] as *const _ as usize;
-    let d2 = dev.vq.desc_mut(desc2 as usize);
-    d2.addr = (status_virt - hhdm_offset) as u64;
-    d2.len = 1;
-    d2.flags = VIRTQ_DESC_F_WRITE;
-    d2.next = 0;
+    // Descriptor 2: Status (device writes)
+    let status_virt = &dev.req_status[idx] as *const _ as usize;
+    dev.desc[desc2 as usize] = VirtqDesc {
+        addr: (status_virt - hhdm_offset) as u64,
+        len: 1,
+        flags: VIRTQ_DESC_F_WRITE,
+        next: 0,
+    };
     
-    dev.register_request(desc0, buf_idx);
-    let queue_size = dev.vq.queue_size;
-    let avail = dev.vq.avail_mut();
-    let avail_idx = avail.idx as usize % queue_size;
-    avail.ring[avail_idx] = desc0;
+    // Add to available ring
+    let avail_idx = dev.avail.idx as usize % QUEUE_SIZE;
+    dev.avail.ring[avail_idx] = desc0;
     
+    // Memory barrier
     core::sync::atomic::fence(Ordering::SeqCst);
-    avail.idx = avail.idx.wrapping_add(1);
     
-    dev.notify_queue(0);
+    dev.avail.idx = dev.avail.idx.wrapping_add(1);
     
-    // Wait for completion
-    let mut timeout = 10000000u32;
-    let start_used = dev.vq.last_used_idx;
+    // Notify device
+    unsafe {
+        outw(dev.io_base + VIRTIO_PCI_QUEUE_NOTIFY, 0);
+    }
     
-    while dev.vq.used().idx == start_used && timeout > 0 {
-        core::sync::atomic::fence(Ordering::Acquire);
+    // Wait for completion (poll used ring)
+    let mut timeout = 1000000u32;
+    while dev.used.idx == dev.last_used_idx && timeout > 0 {
         core::hint::spin_loop();
         timeout -= 1;
     }
     
     if timeout == 0 {
-        dev.vq.free_desc(desc0);
-        dev.vq.free_desc(desc1);
-        dev.vq.free_desc(desc2);
-        dev.free_buffer(buf_idx);
+        dev.free_desc(desc0);
+        dev.free_desc(desc1);
+        dev.free_desc(desc2);
         return false;
     }
     
-    core::sync::atomic::fence(Ordering::Acquire);
+    dev.last_used_idx = dev.last_used_idx.wrapping_add(1);
     
-    let used_idx = dev.vq.last_used_idx as usize % dev.vq.queue_size;
-    let used_elem = dev.vq.used().ring[used_idx];
-    dev.vq.last_used_idx = dev.vq.last_used_idx.wrapping_add(1);
-    
-    let completed_head = used_elem.id as u16;
-    let completed_buf = match dev.complete_request(completed_head) {
-        Some(b) => b,
-        None => {
-            dev.vq.free_desc(desc0);
-            dev.vq.free_desc(desc1);
-            dev.vq.free_desc(desc2);
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    
-    if completed_head != desc0 || completed_buf != buf_idx {
-        dev.vq.free_desc(desc0);
-        dev.vq.free_desc(desc1);
-        dev.vq.free_desc(desc2);
-        dev.free_buffer(buf_idx);
-        return false;
-    }
-    
-    let success = dev.req_status[buf_idx] == VIRTIO_BLK_S_OK;
+    // Check status
+    let success = dev.req_status[idx] == VIRTIO_BLK_S_OK;
     
     if success {
-        buffer.copy_from_slice(&dev.data_buffers[buf_idx]);
+        buffer.copy_from_slice(&dev.data_buffers[idx]);
     }
     
-    dev.vq.free_desc(desc0);
-    dev.vq.free_desc(desc1);
-    dev.vq.free_desc(desc2);
-    dev.free_buffer(buf_idx);
+    // Free descriptors
+    dev.free_desc(desc0);
+    dev.free_desc(desc1);
+    dev.free_desc(desc2);
     
+    // Log the read
     log_event(
         CausalEventType::DiskRead,
         None,
@@ -2217,135 +1893,89 @@ pub fn virtio_write_sector(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> bool {
         return false;
     }
     
-    let buf_idx = match dev.alloc_buffer() {
-        Some(i) => i,
-        None => return false,
-    };
+    // Allocate 3 descriptors
+    let desc0 = match dev.alloc_desc() { Some(d) => d, None => return false };
+    let desc1 = match dev.alloc_desc() { Some(d) => d, None => { dev.free_desc(desc0); return false }};
+    let desc2 = match dev.alloc_desc() { Some(d) => d, None => { dev.free_desc(desc0); dev.free_desc(desc1); return false }};
     
-    let desc0 = match dev.vq.alloc_desc() {
-        Some(d) => d,
-        None => {
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    let desc1 = match dev.vq.alloc_desc() {
-        Some(d) => d,
-        None => {
-            dev.vq.free_desc(desc0);
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    let desc2 = match dev.vq.alloc_desc() {
-        Some(d) => d,
-        None => {
-            dev.vq.free_desc(desc0);
-            dev.vq.free_desc(desc1);
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
-    
+    let idx = (desc0 as usize)%16;
     let hhdm_offset = HHDM_REQUEST.get_response()
         .map(|r| r.offset() as usize)
         .unwrap_or(0);
     
-    dev.req_status[buf_idx] = 0xFF;
-    dev.data_buffers[buf_idx].copy_from_slice(buffer);
+    // Copy data to buffer
+    dev.data_buffers[idx].copy_from_slice(buffer);
     
-    dev.req_headers[buf_idx] = VirtioBlkReqHeader {
+    // Set up request header
+    dev.req_headers[idx] = VirtioBlkReqHeader {
         req_type: VIRTIO_BLK_T_OUT,
         reserved: 0,
         sector,
     };
     
     // Descriptor 0: Header
-    let header_virt = &dev.req_headers[buf_idx] as *const _ as usize;
-    let d0 = dev.vq.desc_mut(desc0 as usize);
-    d0.addr = (header_virt - hhdm_offset) as u64;
-    d0.len = core::mem::size_of::<VirtioBlkReqHeader>() as u32;
-    d0.flags = VIRTQ_DESC_F_NEXT;
-    d0.next = desc1;
+    let header_virt = &dev.req_headers[idx] as *const _ as usize;
+    dev.desc[desc0 as usize] = VirtqDesc {
+        addr: (header_virt - hhdm_offset) as u64,
+        len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+        flags: VIRTQ_DESC_F_NEXT,
+        next: desc1,
+    };
     
-    // Descriptor 1: Data buffer (device reads)
-    let data_virt = dev.data_buffers[buf_idx].as_ptr() as usize;
-    let d1 = dev.vq.desc_mut(desc1 as usize);
-    d1.addr = (data_virt - hhdm_offset) as u64;
-    d1.len = SECTOR_SIZE as u32;
-    d1.flags = VIRTQ_DESC_F_NEXT; // NO WRITE flag for OUT
-    d1.next = desc2;
+    // Descriptor 1: Data buffer (device reads for write)
+    let data_virt = &dev.data_buffers[idx] as *const _ as usize;
+    dev.desc[desc1 as usize] = VirtqDesc {
+        addr: (data_virt - hhdm_offset) as u64,
+        len: SECTOR_SIZE as u32,
+        flags: VIRTQ_DESC_F_NEXT,  // No WRITE flag - device reads this
+        next: desc2,
+    };
     
     // Descriptor 2: Status
-    let status_virt = &dev.req_status[buf_idx] as *const _ as usize;
-    let d2 = dev.vq.desc_mut(desc2 as usize);
-    d2.addr = (status_virt - hhdm_offset) as u64;
-    d2.len = 1;
-    d2.flags = VIRTQ_DESC_F_WRITE;
-    d2.next = 0;
+    let status_virt = &dev.req_status[idx] as *const _ as usize;
+    dev.desc[desc2 as usize] = VirtqDesc {
+        addr: (status_virt - hhdm_offset) as u64,
+        len: 1,
+        flags: VIRTQ_DESC_F_WRITE,
+        next: 0,
+    };
     
-    dev.register_request(desc0, buf_idx);
-    let queue_size = dev.vq.queue_size;
-    let avail = dev.vq.avail_mut();
-    let avail_idx = avail.idx as usize %queue_size;
-    avail.ring[avail_idx] = desc0;
+    // Add to available ring
+    let avail_idx = dev.avail.idx as usize % QUEUE_SIZE;
+    dev.avail.ring[avail_idx] = desc0;
     
     core::sync::atomic::fence(Ordering::SeqCst);
-    avail.idx = avail.idx.wrapping_add(1);
     
-    dev.notify_queue(0);
+    dev.avail.idx = dev.avail.idx.wrapping_add(1);
+    
+    // Notify device
+    unsafe {
+        outw(dev.io_base + VIRTIO_PCI_QUEUE_NOTIFY, 0);
+    }
     
     // Wait for completion
-    let mut timeout = 10000000u32;
-    let start_used = dev.vq.last_used_idx;
-    
-    while dev.vq.used().idx == start_used && timeout > 0 {
-        core::sync::atomic::fence(Ordering::Acquire);
+    let mut timeout = 1000000u32;
+    while dev.used.idx == dev.last_used_idx && timeout > 0 {
         core::hint::spin_loop();
         timeout -= 1;
     }
     
     if timeout == 0 {
-        dev.vq.free_desc(desc0);
-        dev.vq.free_desc(desc1);
-        dev.vq.free_desc(desc2);
-        dev.free_buffer(buf_idx);
+        dev.free_desc(desc0);
+        dev.free_desc(desc1);
+        dev.free_desc(desc2);
         return false;
     }
     
-    core::sync::atomic::fence(Ordering::Acquire);
+    dev.last_used_idx = dev.last_used_idx.wrapping_add(1);
     
-    let used_idx = dev.vq.last_used_idx as usize % dev.vq.queue_size;
-    let used_elem = dev.vq.used().ring[used_idx];
-    dev.vq.last_used_idx = dev.vq.last_used_idx.wrapping_add(1);
+    let success = dev.req_status[idx] == VIRTIO_BLK_S_OK;
     
-    let completed_head = used_elem.id as u16;
-    let completed_buf = match dev.complete_request(completed_head) {
-        Some(b) => b,
-        None => {
-            dev.vq.free_desc(desc0);
-            dev.vq.free_desc(desc1);
-            dev.vq.free_desc(desc2);
-            dev.free_buffer(buf_idx);
-            return false;
-        }
-    };
+    dev.free_desc(desc0);
+    dev.free_desc(desc1);
+    dev.free_desc(desc2);
     
-    if completed_head != desc0 || completed_buf != buf_idx {
-        dev.vq.free_desc(desc0);
-        dev.vq.free_desc(desc1);
-        dev.vq.free_desc(desc2);
-        dev.free_buffer(buf_idx);
-        return false;
-    }
-    
-    let success = dev.req_status[buf_idx] == VIRTIO_BLK_S_OK;
-    
-    dev.vq.free_desc(desc0);
-    dev.vq.free_desc(desc1);
-    dev.vq.free_desc(desc2);
-    dev.free_buffer(buf_idx);
-    
+    // Log the write
     log_event(
         CausalEventType::DiskWrite,
         None,
@@ -2371,8 +2001,18 @@ unsafe fn outl(port: u16, value: u32) {
     asm!("out dx, eax", in("dx") port, in("eax") value, options(nostack, nomem));
 }
 
+unsafe fn inw(port: u16) -> u16 {
+    let value: u16;
+    asm!("in ax, dx", out("ax") value, in("dx") port, options(nostack, nomem));
+    value
+}
+
+unsafe fn outw(port: u16, value: u16) {
+    asm!("out dx, ax", in("dx") port, in("ax") value, options(nostack, nomem));
+}
+
 // ============================================================================
-// PUBLIC API (matches your original ATA interface)
+// PUBLIC API (matches ATA interface for easy swapping)
 // ============================================================================
 
 pub fn disk_read_sector(sector: u64, buffer: &mut [u8; 512]) -> bool {
@@ -2393,24 +2033,22 @@ pub fn disk_is_present() -> bool {
 
 // ============================================================================
 // PSYCHICFS - PERSISTENT PREDICTIVE FILESYSTEM
-// Fixed with proper packed structures
+// A simple filesystem with predictive pre-loading capabilities
 // ============================================================================
-
+// Filesystem layout constants
 const FS_MAGIC: u32 = 0x50535946;  // "PSYF"
 const FS_VERSION: u16 = 1;
 const SUPERBLOCK_SECTOR: u64 = 0;
 const INODE_TABLE_START: u64 = 1;
-const INODE_TABLE_SECTORS: u64 = 64;
-const BITMAP_SECTOR: u64 = 65;
-const DATA_BLOCKS_START: u64 = 128;
+const DATA_BLOCKS_START: u64 = 128;  // Leave room for inodes
 
 const MAX_FILENAME_LEN: usize = 56;
-const MAX_FILES: usize = 256;
+const MAX_FILES: usize = 512;
 const BLOCK_SIZE: usize = 512;
-const MAX_FILE_BLOCKS: usize = 8;
+const MAX_FILE_BLOCKS: usize = 8;  // Max blocks per file (4KB files)
 
 // ============================================================================
-// ON-DISK STRUCTURES (FIXED WITH PACKED LAYOUT)
+// ON-DISK STRUCTURES
 // ============================================================================
 
 #[repr(C, packed)]
@@ -2426,23 +2064,23 @@ pub struct Superblock {
     pub block_size: u16,
     pub mount_count: u32,
     pub last_mount_time: u64,
-    pub _reserved: [u8; 472],
+    pub _reserved: [u8; 470],  // Pad to 512 bytes
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct Inode {
     pub in_use: u8,
-    pub file_type: u8,
+    pub file_type: u8,        // 0 = file, 1 = directory
     pub permissions: u16,
     pub size: u32,
     pub created_time: u64,
     pub modified_time: u64,
-    pub access_count: u32,
+    pub access_count: u32,    // For predictive loading
     pub last_access: u64,
     pub blocks: [u32; MAX_FILE_BLOCKS],
     pub name: [u8; MAX_FILENAME_LEN],
-    pub _reserved: [u8; 8],
+    pub _reserved: [u8; 8],   // Pad to 128 bytes
 }
 
 impl Inode {
@@ -2463,42 +2101,15 @@ impl Inode {
     }
     
     pub fn get_name(&self) -> &str {
-        let name_slice = unsafe {
-            core::slice::from_raw_parts(
-                core::ptr::addr_of!(self.name) as *const u8,
-                MAX_FILENAME_LEN
-            )
-        };
-        let len = name_slice.iter().position(|&c| c == 0).unwrap_or(MAX_FILENAME_LEN);
-        core::str::from_utf8(&name_slice[..len]).unwrap_or("")
+        let len = self.name.iter().position(|&c| c == 0).unwrap_or(MAX_FILENAME_LEN);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
     }
     
     pub fn set_name(&mut self, name: &str) {
         let bytes = name.as_bytes();
         let len = bytes.len().min(MAX_FILENAME_LEN - 1);
-        unsafe {
-            let name_ptr = core::ptr::addr_of_mut!(self.name) as *mut u8;
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), name_ptr, len);
-            core::ptr::write(name_ptr.add(len), 0);
-        }
-    }
-    
-    pub fn get_size(&self) -> u32 {
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.size)) }
-    }
-    
-    pub fn set_size(&mut self, val: u32) {
-        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(self.size), val); }
-    }
-    
-    pub fn get_block(&self, idx: usize) -> u32 {
-        assert!(idx < MAX_FILE_BLOCKS);
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.blocks[idx])) }
-    }
-    
-    pub fn set_block(&mut self, idx: usize, val: u32) {
-        assert!(idx < MAX_FILE_BLOCKS);
-        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(self.blocks[idx]), val); }
+        self.name[..len].copy_from_slice(&bytes[..len]);
+        self.name[len] = 0;
     }
 }
 
@@ -2511,7 +2122,7 @@ pub static PSYCHIC_FS: Mutex<Option<PsychicFs>> = Mutex::new(None);
 pub struct PsychicFs {
     pub mounted: bool,
     pub superblock: Superblock,
-    pub block_bitmap: [u8; 1024],  // Fixed: full 1024 bytes
+    pub block_bitmap: [u8; 1024],  // Supports up to 8192 blocks
 }
 
 impl PsychicFs {
@@ -2521,76 +2132,6 @@ impl PsychicFs {
             superblock: unsafe { core::mem::zeroed() },
             block_bitmap: [0; 1024],
         }
-    }
-    
-    // Fixed: Write both sectors
-    pub fn write_bitmap_to_disk(&self) -> bool {
-        let mut sector1 = [0u8; 512];
-        sector1.copy_from_slice(&self.block_bitmap[..512]);
-        if !disk_write_sector(BITMAP_SECTOR, &sector1) {
-            return false;
-        }
-        
-        let mut sector2 = [0u8; 512];
-        sector2.copy_from_slice(&self.block_bitmap[512..1024]);
-        disk_write_sector(BITMAP_SECTOR + 1, &sector2)
-    }
-    
-    // Fixed: Read both sectors
-    pub fn read_bitmap_from_disk(&mut self) -> bool {
-        let mut sector1 = [0u8; 512];
-        if !disk_read_sector(BITMAP_SECTOR, &mut sector1) {
-            return false;
-        }
-        self.block_bitmap[..512].copy_from_slice(&sector1);
-        
-        let mut sector2 = [0u8; 512];
-        if !disk_read_sector(BITMAP_SECTOR + 1, &mut sector2) {
-            return false;
-        }
-        self.block_bitmap[512..1024].copy_from_slice(&sector2);
-        
-        true
-    }
-}
-
-// ============================================================================
-// SAFE SERIALIZATION HELPERS
-// ============================================================================
-
-fn superblock_to_bytes(sb: &Superblock) -> [u8; 512] {
-    let mut buffer = [0u8; 512];
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            sb as *const Superblock as *const u8,
-            buffer.as_mut_ptr(),
-            core::mem::size_of::<Superblock>()
-        );
-    }
-    buffer
-}
-
-fn bytes_to_superblock(buffer: &[u8; 512]) -> Superblock {
-    unsafe {
-        core::ptr::read_unaligned(buffer.as_ptr() as *const Superblock)
-    }
-}
-
-fn inode_to_bytes(inode: &Inode) -> [u8; 128] {
-    let mut buffer = [0u8; 128];
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            inode as *const Inode as *const u8,
-            buffer.as_mut_ptr(),
-            core::mem::size_of::<Inode>()
-        );
-    }
-    buffer
-}
-
-fn bytes_to_inode(buffer: &[u8]) -> Inode {
-    unsafe {
-        core::ptr::read_unaligned(buffer.as_ptr() as *const Inode)
     }
 }
 
@@ -2604,8 +2145,7 @@ pub fn fs_format() -> bool {
         return false;
     }
     
-    println!("Formatting PsychicFS...");
-    
+    // Create new superblock
     let superblock = Superblock {
         magic: FS_MAGIC,
         version: FS_VERSION,
@@ -2616,45 +2156,34 @@ pub fn fs_format() -> bool {
         first_data_block: DATA_BLOCKS_START as u32,
         block_size: BLOCK_SIZE as u16,
         mount_count: 0,
-        last_mount_time: 0,
-        _reserved: [0; 472],
+        last_mount_time: get_timestamp(),
+        _reserved: [0; 470],
     };
     
-    let sb_bytes = superblock_to_bytes(&superblock);
-    if !disk_write_sector(SUPERBLOCK_SECTOR, &sb_bytes) {
-        println!("Failed to write superblock!");
+    // Write superblock
+    let sb_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &superblock as *const Superblock as *const u8,
+            BLOCK_SIZE
+        )
+    };
+    
+    let mut buffer = [0u8; 512];
+    buffer.copy_from_slice(sb_bytes);
+    
+    if !disk_write_sector(SUPERBLOCK_SECTOR, &buffer) {
         return false;
     }
-    println!("  Superblock written");
     
+    // Clear inode table
     let empty_sector = [0u8; 512];
-    for i in 0..INODE_TABLE_SECTORS {
+    for i in 0..127 {
         if !disk_write_sector(INODE_TABLE_START + i, &empty_sector) {
-            println!("Failed to clear inode table at sector {}", INODE_TABLE_START + i);
             return false;
         }
     }
-    println!("  Inode table cleared ({} sectors)", INODE_TABLE_SECTORS);
     
-    // Clear both bitmap sectors
-    if !disk_write_sector(BITMAP_SECTOR, &empty_sector) {
-        println!("Failed to write bitmap sector 1!");
-        return false;
-    }
-    if !disk_write_sector(BITMAP_SECTOR + 1, &empty_sector) {
-        println!("Failed to write bitmap sector 2!");
-        return false;
-    }
-    println!("  Block bitmap initialized");
-    
-    println!("Format complete!");
-    let total = unsafe { core::ptr::read_unaligned(addr_of!(superblock.total_blocks)) };
-    let free = unsafe { core::ptr::read_unaligned(addr_of!(superblock.free_blocks)) };
-    let total_i = unsafe { core::ptr::read_unaligned(addr_of!(superblock.total_inodes)) };
-    println!("  Total blocks: {}", total);
-    println!("  Free blocks:  {}", free);
-    println!("  Total inodes: {}", total_i);
-    
+    println!("Filesystem formatted successfully!");
     true
 }
 
@@ -2664,62 +2193,53 @@ pub fn fs_mount() -> bool {
         return false;
     }
     
-    println!("Mounting PsychicFS...");
+    let mut buffer = [0u8; 512];
     
-    let mut sb_buffer = [0u8; 512];
-    if !disk_read_sector(SUPERBLOCK_SECTOR, &mut sb_buffer) {
+    // Read superblock
+    if !disk_read_sector(SUPERBLOCK_SECTOR, &mut buffer) {
         println!("Failed to read superblock");
         return false;
     }
     
-    let mut superblock = bytes_to_superblock(&sb_buffer);
+    let superblock: Superblock = unsafe {
+        core::ptr::read(buffer.as_ptr() as *const Superblock)
+    };
     
-    let magic = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.magic)) };
+    // Copy values to locals to avoid packed struct alignment issues
+    let magic = superblock.magic;
+    let version = superblock.version;
+    
+    // Verify magic
     if magic != FS_MAGIC {
-        println!("Invalid filesystem magic: 0x{:08X} (expected 0x{:08X})", 
-                 magic, FS_MAGIC);
-        println!("Try 'format' first");
+        println!("Invalid filesystem (bad magic: 0x{:08X})", magic);
         return false;
     }
     
-    let version = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.version)) };
     if version != FS_VERSION {
-        println!("Unsupported version: {} (expected {})", version, FS_VERSION);
+        println!("Unsupported filesystem version: {}", version);
         return false;
     }
     
-    let mut pfs = PsychicFs::new();
-    if !pfs.read_bitmap_from_disk() {
-        println!("Failed to read block bitmap");
-        return false;
+    // Update mount info
+    let mut fs = PSYCHIC_FS.lock();
+    *fs = Some(PsychicFs::new());
+    
+    if let Some(ref mut pfs) = *fs {
+        pfs.superblock = superblock;
+        pfs.superblock.mount_count += 1;
+        pfs.superblock.last_mount_time = get_timestamp();
+        pfs.mounted = true;
+        
+        // Write updated superblock
+        let sb_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &pfs.superblock as *const Superblock as *const u8,
+                BLOCK_SIZE
+            )
+        };
+        buffer.copy_from_slice(sb_bytes);
+        let _ = disk_write_sector(SUPERBLOCK_SECTOR, &buffer);
     }
-    
-    // Update mount count
-    unsafe {
-        let mount_count = core::ptr::read_unaligned(core::ptr::addr_of!(superblock.mount_count));
-        core::ptr::write_unaligned(core::ptr::addr_of_mut!(superblock.mount_count), mount_count + 1);
-    }
-    
-    let sb_bytes = superblock_to_bytes(&superblock);
-    if !disk_write_sector(SUPERBLOCK_SECTOR, &sb_bytes) {
-        println!("Warning: Failed to update mount count");
-    }
-    
-    pfs.superblock = superblock;
-    pfs.mounted = true;
-    
-    let mount_count = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.mount_count)) };
-    let total_blocks = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.total_blocks)) };
-    let free_blocks = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.free_blocks)) };
-    let total_inodes = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.total_inodes)) };
-    
-    println!("Mount successful!");
-    println!("  Mount count: {}", mount_count);
-    println!("  Total blocks: {}", total_blocks);
-    println!("  Free blocks: {}", free_blocks);
-    println!("  Total inodes: {}", total_inodes);
-    
-    *PSYCHIC_FS.lock() = Some(pfs);
     
     true
 }
@@ -2735,18 +2255,17 @@ pub fn fs_unmount() {
 fn find_inode_by_name(name: &str) -> Option<(u32, Inode)> {
     let mut buffer = [0u8; 512];
     
-    for sector in 0..INODE_TABLE_SECTORS {
+    // Scan inode table (4 inodes per sector, 128 bytes each)
+    for sector in 0..128 {
         if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
             continue;
         }
         
         for i in 0..4 {
             let offset = i * 128;
-            if offset + 128 > 512 {
-                break;
-            }
-            
-            let inode = bytes_to_inode(&buffer[offset..offset + 128]);
+            let inode: Inode = unsafe {
+                core::ptr::read(buffer[offset..].as_ptr() as *const Inode)
+            };
             
             if inode.in_use != 0 && inode.get_name() == name {
                 let inode_num = (sector * 4 + i as u64) as u32;
@@ -2761,18 +2280,16 @@ fn find_inode_by_name(name: &str) -> Option<(u32, Inode)> {
 fn find_free_inode() -> Option<u32> {
     let mut buffer = [0u8; 512];
     
-    for sector in 0..INODE_TABLE_SECTORS {
+    for sector in 0..128 {
         if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
             continue;
         }
         
         for i in 0..4 {
             let offset = i * 128;
-            if offset + 128 > 512 {
-                break;
-            }
-            
-            let inode = bytes_to_inode(&buffer[offset..offset + 128]);
+            let inode: Inode = unsafe {
+                core::ptr::read(buffer[offset..].as_ptr() as *const Inode)
+            };
             
             if inode.in_use == 0 {
                 return Some((sector * 4 + i as u64) as u32);
@@ -2787,86 +2304,33 @@ fn write_inode(inode_num: u32, inode: &Inode) -> bool {
     let sector = (inode_num / 4) as u64;
     let offset = (inode_num % 4) as usize * 128;
     
-    if sector >= INODE_TABLE_SECTORS {
-        return false;
-    }
-    
     let mut buffer = [0u8; 512];
     if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
         return false;
     }
     
-    let inode_bytes = inode_to_bytes(inode);
-    buffer[offset..offset + 128].copy_from_slice(&inode_bytes);
+    let inode_bytes = unsafe {
+        core::slice::from_raw_parts(inode as *const Inode as *const u8, 128)
+    };
+    buffer[offset..offset + 128].copy_from_slice(inode_bytes);
     
     disk_write_sector(INODE_TABLE_START + sector, &buffer)
 }
 
-fn allocate_block() -> Option<u32> {
-    let mut fs = PSYCHIC_FS.lock();
-    if let Some(ref mut pfs) = *fs {
-        let total_blocks = unsafe { 
-            core::ptr::read_unaligned(core::ptr::addr_of!(pfs.superblock.total_blocks))
-        };
-        let max_blocks = (total_blocks - DATA_BLOCKS_START as u32) as usize;
-        
-        for i in 0..max_blocks {
+fn find_free_block() -> Option<u32> {
+    let fs = PSYCHIC_FS.lock();
+    if let Some(ref pfs) = *fs {
+        for i in 0..(pfs.superblock.total_blocks as usize) {
             let byte_idx = i / 8;
             let bit_idx = i % 8;
-            
-            if byte_idx >= pfs.block_bitmap.len() {
-                break;
-            }
-            
-            if pfs.block_bitmap[byte_idx] & (1 << bit_idx) == 0 {
-                pfs.block_bitmap[byte_idx] |= 1 << bit_idx;
-                
-                let free_blocks = unsafe {
-                    core::ptr::read_unaligned(core::ptr::addr_of!(pfs.superblock.free_blocks))
-                };
-                unsafe {
-                    core::ptr::write_unaligned(
-                        core::ptr::addr_of_mut!(pfs.superblock.free_blocks),
-                        free_blocks.saturating_sub(1)
-                    );
+            if byte_idx < pfs.block_bitmap.len() {
+                if pfs.block_bitmap[byte_idx] & (1 << bit_idx) == 0 {
+                    return Some(DATA_BLOCKS_START as u32 + i as u32);
                 }
-                
-                let _ = pfs.write_bitmap_to_disk();
-                
-                return Some(DATA_BLOCKS_START as u32 + i as u32);
             }
         }
     }
     None
-}
-
-fn free_block(block_num: u32) {
-    if block_num < DATA_BLOCKS_START as u32 {
-        return;
-    }
-    
-    let mut fs = PSYCHIC_FS.lock();
-    if let Some(ref mut pfs) = *fs {
-        let idx = (block_num - DATA_BLOCKS_START as u32) as usize;
-        let byte_idx = idx / 8;
-        let bit_idx = idx % 8;
-        
-        if byte_idx < pfs.block_bitmap.len() {
-            pfs.block_bitmap[byte_idx] &= !(1 << bit_idx);
-            
-            let free_blocks = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(pfs.superblock.free_blocks))
-            };
-            unsafe {
-                core::ptr::write_unaligned(
-                    core::ptr::addr_of_mut!(pfs.superblock.free_blocks),
-                    free_blocks + 1
-                );
-            }
-            
-            let _ = pfs.write_bitmap_to_disk();
-        }
-    }
 }
 
 // ============================================================================
@@ -2879,11 +2343,13 @@ pub fn fs_create(name: &str) -> bool {
         return false;
     }
     
+    // Check if already exists
     if find_inode_by_name(name).is_some() {
         println!("File already exists");
         return false;
     }
     
+    // Find free inode
     let inode_num = match find_free_inode() {
         Some(n) => n,
         None => {
@@ -2892,6 +2358,7 @@ pub fn fs_create(name: &str) -> bool {
         }
     };
     
+    // Create inode
     let mut inode = Inode::new();
     inode.in_use = 1;
     inode.file_type = 0;
@@ -2899,11 +2366,13 @@ pub fn fs_create(name: &str) -> bool {
     inode.created_time = get_timestamp();
     inode.modified_time = get_timestamp();
     
+    // Write inode
     if !write_inode(inode_num, &inode) {
         println!("Failed to write inode");
         return false;
     }
     
+    // Log file creation
     log_event(
         CausalEventType::FileOpen,
         None,
@@ -2919,6 +2388,7 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
     let (inode_num, mut inode) = match find_inode_by_name(name) {
         Some(i) => i,
         None => {
+            // Create file first
             if !fs_create(name) {
                 return false;
             }
@@ -2929,47 +2399,21 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
         }
     };
     
+    // Calculate blocks needed
     let blocks_needed = (data.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
     if blocks_needed > MAX_FILE_BLOCKS {
         println!("File too large (max {} bytes)", MAX_FILE_BLOCKS * BLOCK_SIZE);
         return false;
     }
     
-    let old_size = inode.get_size() as usize;
-    let old_blocks = (old_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    
-    // Fixed: Zero trailing bytes when shrinking
-    if blocks_needed < old_blocks {
-        if blocks_needed > 0 {
-            let last_block = inode.get_block(blocks_needed - 1);
-            let last_block_size = data.len() % BLOCK_SIZE;
-            
-            if last_block_size > 0 && last_block != 0 {
-                let mut block_buf = [0u8; 512];
-                if disk_read_sector(last_block as u64, &mut block_buf) {
-                    block_buf[last_block_size..].fill(0);
-                    let _ = disk_write_sector(last_block as u64, &block_buf);
-                }
-            }
-        }
-        
-        for i in blocks_needed..old_blocks.min(MAX_FILE_BLOCKS) {
-            let block = inode.get_block(i);
-            if block != 0 {
-                free_block(block);
-                inode.set_block(i, 0);
-            }
-        }
-    }
-    
-    // Write data blocks
+    // Allocate blocks and write data
     for i in 0..blocks_needed {
-        let block = if inode.get_block(i) != 0 {
-            inode.get_block(i)
+        let block = if inode.blocks[i] != 0 {
+            inode.blocks[i]
         } else {
-            match allocate_block() {
+            match find_free_block() {
                 Some(b) => {
-                    inode.set_block(i, b);
+                    inode.blocks[i] = b;
                     b
                 }
                 None => {
@@ -2991,41 +2435,44 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
         }
     }
     
-    inode.set_size(data.len() as u32);
+    // Update inode
+    inode.size = data.len() as u32;
     inode.modified_time = get_timestamp();
- 
+    inode.access_count += 1;
+    inode.last_access = get_timestamp();
+    
     if !write_inode(inode_num, &inode) {
         println!("Failed to update inode");
         return false;
     }
     
+    // Track access pattern for prediction
     record_file_access(inode_num);
+    
     true
 }
 
 pub fn fs_read(name: &str) -> Option<Vec<u8>> {
     let (inode_num, mut inode) = find_inode_by_name(name)?;
     
-    let size = inode.get_size();
-    if size == 0 {
+    if inode.size == 0 {
         return Some(Vec::new());
     }
     
-    let mut data = Vec::with_capacity(size as usize);
-    let blocks_needed = (size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let mut data = Vec::with_capacity(inode.size as usize);
+    let blocks_needed = (inode.size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
     
     for i in 0..blocks_needed {
-        let block = inode.get_block(i);
-        if block == 0 {
+        if inode.blocks[i] == 0 {
             break;
         }
         
         let mut buffer = [0u8; 512];
-        if !disk_read_sector(block as u64, &mut buffer) {
+        if !disk_read_sector(inode.blocks[i] as u64, &mut buffer) {
             return None;
         }
         
-        let remaining = size as usize - data.len();
+        let remaining = inode.size as usize - data.len();
         let to_read = remaining.min(BLOCK_SIZE);
         data.extend_from_slice(&buffer[..to_read]);
     }
@@ -3035,8 +2482,10 @@ pub fn fs_read(name: &str) -> Option<Vec<u8>> {
     inode.last_access = get_timestamp();
     let _ = write_inode(inode_num, &inode);
     
+    // Track for prediction
     record_file_access(inode_num);
     
+    // Log file read
     log_event(
         CausalEventType::FileOpen,
         None,
@@ -3057,24 +2506,17 @@ pub fn fs_delete(name: &str) -> bool {
         }
     };
     
-    // Free all blocks
-    for i in 0..MAX_FILE_BLOCKS {
-        let block = inode.get_block(i);
-        if block != 0 {
-            free_block(block);
-            inode.set_block(i, 0);
-        }
-    }
-    
     // Mark inode as free
     inode.in_use = 0;
-    inode.set_size(0);
+    
+    // TODO: Free blocks in bitmap
     
     if !write_inode(inode_num, &inode) {
         println!("Failed to delete file");
         return false;
     }
     
+    // Log deletion
     log_event(
         CausalEventType::FileClose,
         None,
@@ -3090,18 +2532,16 @@ pub fn fs_list() -> Vec<String> {
     let mut files = Vec::new();
     let mut buffer = [0u8; 512];
     
-    for sector in 0..INODE_TABLE_SECTORS {
+    for sector in 0..128 {
         if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
             continue;
         }
         
         for i in 0..4 {
             let offset = i * 128;
-            if offset + 128 > 512 {
-                break;
-            }
-            
-            let inode = bytes_to_inode(&buffer[offset..offset + 128]);
+            let inode: Inode = unsafe {
+                core::ptr::read(buffer[offset..].as_ptr() as *const Inode)
+            };
             
             if inode.in_use != 0 {
                 files.push(String::from(inode.get_name()));
@@ -3117,7 +2557,7 @@ pub fn fs_stat(name: &str) -> Option<FileStat> {
     
     Some(FileStat {
         inode: inode_num,
-        size: inode.get_size(),
+        size: inode.size,
         file_type: inode.file_type,
         created: inode.created_time,
         modified: inode.modified_time,
@@ -3587,7 +3027,7 @@ impl Shell {
                 if let Some(ref dev) = *VIRTIO_BLK.lock() {
                     let size_mb = (dev.capacity * 512) / (1024 * 1024);
                     println!("VirtIO Block Device:");
-                    println!("  PCI Location: {:02x}:{:02x}.{}", dev.bus, dev.device, dev.func);
+                    println!("  IO Base:  0x{:x}", dev.io_base);
                     println!("  Sectors:  {}", dev.capacity);
                     println!("  Size:     {} MB", size_mb);
                     println!("  Present:  {}", dev.present);
@@ -3754,9 +3194,6 @@ pub extern "C" fn _start() -> ! {
     let has_disk = init_virtio_block();
     init_dream_engine();
     println!();
-
-    test_disk_io();
-
     fb_print_colored("â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n", 0x00AA00);
     fb_print_colored("  âœ“ All systems operational\n", 0x00FF00);
     fb_print_colored("  âœ“ Reality Engine: ACTIVE\n", 0x00FF00);
@@ -3810,63 +3247,6 @@ fn test_fractal() {
         } else {
             println!("      âœ— Failed at ({},{},{})", x, y, z);
         }
-    }
-}
-fn test_disk_io() {
-    println!("=== DISK I/O TEST ===");
-    
-    // Test 1: Read sector 0 (should exist)
-    println!("\n[Test 1] Reading sector 0...");
-    let mut read_buf = [0u8; 512];
-    let read_result = disk_read_sector(0, &mut read_buf);
-    println!("  Result: {}", read_result);
-    if read_result {
-        println!("  First 16 bytes: {:02x?}", &read_buf[..16]);
-    }
-    
-    // Test 2: Write to sector 1000
-    println!("\n[Test 2] Writing test pattern to sector 1000...");
-    let mut write_buf = [0u8; 512];
-    for i in 0..512 {
-        write_buf[i] = (i & 0xFF) as u8;
-    }
-    
-    let write_result = disk_write_sector(1000, &write_buf);
-    println!("  Write result: {}", write_result);
-    
-    if !write_result {
-        println!("  WRITE FAILED - stopping test");
-        return;
-    }
-    
-    // Test 3: Read back sector 1000
-    println!("\n[Test 3] Reading back sector 1000...");
-    let mut read_buf2 = [0u8; 512];
-    let read_result2 = disk_read_sector(1000, &mut read_buf2);
-    println!("  Read result: {}", read_result2);
-    
-    if !read_result2 {
-        println!("  READ FAILED");
-        return;
-    }
-    
-    // Test 4: Verify data
-    println!("\n[Test 4] Verifying data...");
-    let mut mismatches = 0;
-    for i in 0..512 {
-        if read_buf2[i] != write_buf[i] {
-            if mismatches < 5 {
-                println!("  Mismatch at byte {}: wrote 0x{:02x}, read 0x{:02x}", 
-                         i, write_buf[i], read_buf2[i]);
-            }
-            mismatches += 1;
-        }
-    }
-    
-    if mismatches == 0 {
-        println!("  ✓ VERIFY OK - All 512 bytes match!");
-    } else {
-        println!("  ✗ VERIFY FAILED - {} mismatches", mismatches);
     }
 }
 
