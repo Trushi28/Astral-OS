@@ -144,9 +144,7 @@ debug: iso
 clean:
 	@echo "==> Cleaning..."
 	cd kernel && cargo clean
-	rm -rf iso_root astral.iso qemu.log
-	@# Handle stuck mounts
-	@if mountpoint -q mnt 2>/dev/null; then sudo umount mnt; fi
+	rm -rf iso_root astral.iso qemu.log astral-disk.img
 	@echo "==> Done"
 
 distclean: clean
