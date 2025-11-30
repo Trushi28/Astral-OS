@@ -4,7 +4,7 @@
 
 .PHONY: all clean run debug kernel iso help limine font
 
-KERNEL_ELF := kernel/target/x86_64-unknown-none/release/astral-kernel
+KERNEL_ELF := kernel/target/x86_64-astral/release/astral-kernel
 
 # Default target
 all: iso
@@ -32,22 +32,17 @@ limine:
 # Build kernel
 kernel: font
 	@echo "==> Building kernel..."
-	cd kernel && cargo +nightly build \
-		--release \
-		--target x86_64-unknown-none \
-		-Z build-std=core,alloc \
-		-Z build-std-features=compiler-builtins-mem
+	cd kernel && cargo +nightly build --release
 	@echo "==> Kernel built: $(KERNEL_ELF)"
 	@file $(KERNEL_ELF)
 
 # Generate font if missing or empty
 font:
-	@if [ ! -f kernel/font.bin ] || [ ! -s kernel/font.bin ]; then \
-		echo "==> ERROR: kernel/font.bin missing or empty!"; \
-		echo "    Please provide a valid 8x16 bitmap font."; \
+	@if [ ! -f kernel/SpaceMono-Regular.ttf ] || [ ! -s kernel/SpaceMono-Regular.ttf ]; then \
+		echo "==> ERROR: kernel/SpaceMono-Regular.ttf missing or empty!"; \
 		exit 1; \
 	fi
-	@echo "==> Font: kernel/font.bin ($(shell wc -c < kernel/font.bin) bytes)"
+	@echo "==> Font: kernel/SpaceMono-Regular.ttf ($(shell wc -c < kernel/SpaceMono-Regular.ttf) bytes)"
 
 # Create ISO
 iso: limine kernel
