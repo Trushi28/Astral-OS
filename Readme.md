@@ -84,7 +84,12 @@ rustup default nightly
 rustup component add rust-src --toolchain nightly
 
 # Build tools
+# For apt based linux
 sudo apt install build-essential xorriso mtools
+
+# For Arch-based linux
+sudo pacman -S base-devel xorriso mtools
+
 ```
 
 ### Required Font
@@ -100,14 +105,16 @@ wget https://github.com/googlefonts/spacemono/raw/main/fonts/ttf/SpaceMono-Regul
 ### Build & Run
 
 ```bash
-# Build kernel
+
+# To Build via Make at source file
+make all
+
+# else only Build kernel
 cd kernel
-cargo +nightly build --release --target x86_64-unknown-none \
-  -Z build-std=core,alloc \
-  -Z build-std-features=compiler-builtins-mem
+cargo +nightly build --release
 
 # Create bootable ISO
-cd ..
+cd .. 
 make iso
 
 # Run in QEMU
@@ -379,5 +386,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 For questions, issues, or contributions, please open an issue on GitHub.
 
 ---
+**Note: This is the modular version of Astral OS. The single-file “godfile” version is available in the Godfile-Version branch.**
 
 **Built with 🦀 Rust and ☕ caffeine**
