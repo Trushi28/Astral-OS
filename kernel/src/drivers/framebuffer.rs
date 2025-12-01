@@ -1,9 +1,49 @@
-//src/drivers/framebuffer.rs
-use core::ptr::{write_volatile, read_volatile};
+use core::ptr::write_volatile;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::mem::ManuallyDrop;
 use spin::Mutex;
 use fontdue::{Font, FontSettings};
+use crate::util::{outb, inb};
+fn debug_print_dec(mut val: usize) {
+    let com1 = 0x3F8;
+    unsafe {
+        if val == 0 {
+            while (inb(com1 + 5) & 0x20) == 0 {}
+            outb(com1, b'0');
+            return;
+        }
 
-const FONT_DATA: &[u8] = include_bytes!(env!("FONT_PATH"));
+        let mut buffer = [0u8; 20];
+        let mut i = 0;
+
+        while val > 0 {
+            buffer[19 - i] = b'0' + (val % 10) as u8;
+            val /= 10;
+            i += 1;
+        }
+
+        for &byte in &buffer[20 - i..] {
+            while (inb(com1 + 5) & 0x20) == 0 {}
+            outb(com1, byte);
+        }
+    }
+}
+
+fn debug_print(msg: &[u8]) {
+    let com1 = 0x3F8;
+    unsafe {
+        for &byte in msg {
+            while (inb(com1 + 5) & 0x20) == 0 {}
+            outb(com1, byte);
+        }
+        // Print newline
+        while (inb(com1 + 5) & 0x20) == 0 {}
+        outb(com1, b'\n');
+        while (inb(com1 + 5) & 0x20) == 0 {}
+        outb(com1, b'\r');
+    }
+}
+const FONT_DATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/SpaceMono-Regular.ttf"));
 
 pub struct Framebuffer {
     addr: *mut u32,
@@ -18,6 +58,9 @@ pub struct Framebuffer {
     font_size: f32,
     line_height: usize,
     
+    // Calculated once at startup for consistent grid layout
+    char_width: usize,
+    
     // Colors
     fg_color: u32,
     bg_color: u32,
@@ -29,11 +72,32 @@ unsafe impl Sync for Framebuffer {}
 impl Framebuffer {
     pub fn new(addr: *mut u8, width: usize, height: usize, pitch: usize, bpp: u16) -> Self {
         // Load font with fontdue
+        debug_print(b"[DEBUG] FB: Checking Font Data...");
+        let len = FONT_DATA.len();
+        debug_print(b"[DEBUG] FB: Font bytes found:");
+        debug_print_dec(len); // No
+        if len == 0 {
+            debug_print(b"[FATAL] FB: Font file is empty or missing!");
+            loop {}
+        }
+
+        debug_print(b"[DEBUG] FB: Parsing font with fontdue...");
+
         let font = Font::from_bytes(FONT_DATA, FontSettings::default())
             .expect("Failed to load font");
-        
+        debug_print(b"[DEBUG] FB: Font parsed successfully!");
         let font_size = 16.0;
         let line_height = 20; // Slightly more than font size for spacing
+        
+        // Calculate fixed character width using a standard char (like 'A' or '0')
+        // This enforces a strict grid, making backspace and tabs robust.
+        let metrics = font.metrics('A', font_size);
+        let advance = metrics.advance_width;
+        let char_width = if advance > (advance as usize as f32) {
+            (advance as usize) + 1
+        } else {
+            advance as usize
+        };
         
         Self {
             addr: addr as *mut u32,
@@ -45,6 +109,7 @@ impl Framebuffer {
             font,
             font_size,
             line_height,
+            char_width,
             fg_color: 0xFFFFFF,
             bg_color: 0x000000,
         }
@@ -87,19 +152,21 @@ impl Framebuffer {
     pub fn draw_char(&mut self, c: char, fg: u32, bg: u32) {
         match c {
             '\n' => {
-                self.x = 0;
-                self.y += self.line_height;
-                if self.y + self.line_height > self.height {
-                    self.scroll();
-                }
+                self.newline();
             }
             '\r' => {
                 self.x = 0;
             }
             '\t' => {
-                let spaces = 4 - (self.x / 8 % 4);
-                for _ in 0..spaces {
-                    self.draw_char(' ', fg, bg);
+                // Perfect grid alignment logic
+                let tab_size = 4 * self.char_width;
+                // Calculate distance to next tab stop
+                let next_tab = (self.x / tab_size + 1) * tab_size;
+                self.x = next_tab;
+                
+                // Wrap if we go past edge
+                if self.x >= self.width {
+                    self.newline();
                 }
             }
             '\x08' | '\x7F' => { // Backspace / DEL
@@ -109,9 +176,10 @@ impl Framebuffer {
                 // Rasterize character
                 let (metrics, bitmap) = self.font.rasterize(c, self.font_size);
                 
-                // Draw background
+                // Draw background for the specific cell size
+                // We use char_width here to ensure we fill the whole "grid cell" background
                 for row in 0..self.line_height {
-                    for col in 0..metrics.advance_width as usize {
+                    for col in 0..self.char_width {
                         if self.x + col < self.width && self.y + row < self.height {
                             self.put_pixel(self.x + col, self.y + row, bg);
                         }
@@ -133,27 +201,40 @@ impl Framebuffer {
                                     self.blend_colors(fg, bg, alpha)
                                 };
                                 
+                                // Calculate position
                                 let px = self.x + col;
-                                let py = self.y + metrics.ymin as usize + row;
                                 
-                                if px < self.width && py < self.height {
-                                    self.put_pixel(px, py, color);
+                                // SAFE Y CALCULATION:
+                                // ymin is i32 and can be negative. 
+                                // We must use i32 arithmetic before casting to usize.
+                                let base_y = self.y as i32 + metrics.ymin;
+                                let py = base_y + row as i32;
+                                
+                                // Bounds check using signed comparison for y
+                                if px < self.width && py >= 0 && (py as usize) < self.height {
+                                    self.put_pixel(px, py as usize, color);
                                 }
                             }
                         }
                     }
                 }
                 
-                // Advance cursor
-                self.x += metrics.advance_width as usize;
-                if self.x + metrics.advance_width as usize > self.width {
-                    self.x = 0;
-                    self.y += self.line_height;
-                    if self.y + self.line_height > self.height {
-                        self.scroll();
-                    }
+                // Advance cursor by FIXED width, not variable metric
+                self.x += self.char_width;
+                
+                if self.x + self.char_width > self.width {
+                    self.newline();
                 }
             }
+        }
+    }
+    
+    /// Handle newline logic
+    fn newline(&mut self) {
+        self.x = 0;
+        self.y += self.line_height;
+        if self.y + self.line_height > self.height {
+            self.scroll();
         }
     }
     
@@ -177,15 +258,15 @@ impl Framebuffer {
         (r << 16) | (g << 8) | b
     }
     
-    /// Scroll screen up by one line
+
     fn scroll(&mut self) {
         unsafe {
-            // Copy lines up
+
             let lines_to_copy = self.height - self.line_height;
             let src = self.addr.add(self.line_height * self.pitch);
             core::ptr::copy(src, self.addr, lines_to_copy * self.pitch);
             
-            // Clear bottom line
+
             let clear_start = self.addr.add(lines_to_copy * self.pitch);
             for i in 0..(self.line_height * self.pitch) {
                 write_volatile(clear_start.add(i), self.bg_color);
@@ -195,26 +276,31 @@ impl Framebuffer {
         self.y = self.height - self.line_height;
     }
     
-    /// Backspace
+
     fn backspace(&mut self) {
-        if self.x >= 8 {
-            self.x -= 8;
+        if self.x >= self.char_width {
+            self.x -= self.char_width;
         } else if self.y >= self.line_height {
             self.y -= self.line_height;
-            self.x = self.width - 8;
+            
+            let cols = self.width / self.char_width;
+            self.x = (cols * self.char_width) - self.char_width;
         } else {
             return;
         }
         
-        // Clear character
         for row in 0..self.line_height {
-            for col in 0..8 {
-                self.put_pixel(self.x + col, self.y + row, self.bg_color);
+            for col in 0..self.char_width {
+                let px = self.x + col;
+                let py = self.y + row;
+                
+                if px < self.width && py < self.height {
+                    self.put_pixel(px, py, self.bg_color);
+                }
             }
         }
     }
     
-    /// Write string
     pub fn write_str(&mut self, s: &str) {
         for c in s.chars() {
             self.draw_char(c, self.fg_color, self.bg_color);
@@ -240,7 +326,76 @@ impl Framebuffer {
     }
 }
 
-static FB: Mutex<Option<Framebuffer>> = Mutex::new(None);
+
+
+pub struct IrqSafeMutex<T> {
+    data: spin::Mutex<T>,
+}
+
+impl<T> IrqSafeMutex<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            data: spin::Mutex::new(data),
+        }
+    }
+    
+    pub fn lock(&self) -> IrqSafeGuard<T> {
+        let flags: u64;
+        unsafe {
+            core::arch::asm!(
+                "pushfq",
+                "pop {}",
+                "cli",
+                out(reg) flags,
+                options(nomem, preserves_flags)
+            );
+        }
+        
+        let guard = self.data.lock();
+        
+        IrqSafeGuard {
+            guard: ManuallyDrop::new(guard),
+            old_flags: flags,
+        }
+    }
+}
+
+pub struct IrqSafeGuard<'a, T> {
+    guard: ManuallyDrop<spin::MutexGuard<'a, T>>,
+    old_flags: u64,
+}
+
+impl<'a, T> Drop for IrqSafeGuard<'a, T> {
+    fn drop(&mut self) {
+        
+        unsafe {
+            ManuallyDrop::drop(&mut self.guard);
+        }
+        
+        unsafe {
+            if self.old_flags & 0x200 != 0 {
+                core::arch::asm!("sti", options(nomem, nostack));
+            }
+        }
+    }
+}
+
+impl<'a, T> core::ops::Deref for IrqSafeGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.guard
+    }
+}
+
+impl<'a, T> core::ops::DerefMut for IrqSafeGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.guard
+    }
+}
+
+// --- Global Instance and Macros ---
+
+static FB: IrqSafeMutex<Option<Framebuffer>> = IrqSafeMutex::new(None);
 
 pub fn init() {
     use crate::FRAMEBUFFER_REQUEST;

@@ -5,5 +5,11 @@ target = "x86_64-astral.json"
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
+[target.x86_64-astral]
+rustflags = [
+    "-C", "link-arg=-Tlinker.ld",
+    "-C", "link-arg=--no-rosegment",
+]
+
 [target.'cfg(target_os = "none")']
 runner = "qemu-system-x86_64"

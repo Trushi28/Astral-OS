@@ -7,8 +7,6 @@
 #![feature(core_intrinsics)]
 
 extern crate alloc;
-#[cfg(not(feature = "std"))]
-use hashbrown as std_hashbrown;
 
 pub mod memory;
 pub mod process;
@@ -57,7 +55,7 @@ pub fn increment_timestamp() {
 }
 
 // ============================================================================
-// LIMINE REQUESTS
+// LIMINE REQUESTS - CRITICAL: Must be in .requests section
 // ============================================================================
 
 use limine::request::{
@@ -65,26 +63,33 @@ use limine::request::{
     StackSizeRequest, RequestsEndMarker, RequestsStartMarker
 };
 
+// Start marker - MUST be first
 #[used]
-#[link_section = ".requests"]
+#[link_section = ".requests_start_marker"]
 static REQUESTS_START: RequestsStartMarker = RequestsStartMarker::new();
 
+// Framebuffer request
 #[used]
 #[link_section = ".requests"]
 pub static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
+// Memory map request
 #[used]
 #[link_section = ".requests"]
 pub static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 
+// HHDM request
 #[used]
 #[link_section = ".requests"]
 pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
+// Stack size request
 #[used]
 #[link_section = ".requests"]
-static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(0x10000);
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new()
+    .with_size(0x80000); // 64KB stack
 
+// End marker - MUST be last
 #[used]
-#[link_section = ".requests"]
+#[link_section = ".requests_end_marker"]
 static REQUESTS_END: RequestsEndMarker = RequestsEndMarker::new();

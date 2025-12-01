@@ -4,6 +4,13 @@ version = "0.3.0"
 edition = "2021"
 authors = ["Astral OS Team"]
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "astral-kernel"
+path = "src/main.rs"
+
 [dependencies]
 spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
 limine = "0.5"
@@ -25,7 +32,7 @@ panic = "abort"
 lto = "fat"
 opt-level = 3
 codegen-units = 1
-strip = "symbols"
+strip = false
 overflow-checks = false
 
 [package.metadata.bootimage]

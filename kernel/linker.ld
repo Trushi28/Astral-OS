@@ -11,6 +11,13 @@ SECTIONS
     
     _kernel_start = .;
 
+    /* Limine requests must be in a specific section */
+    .requests : {
+        KEEP(*(.requests_start_marker))
+        KEEP(*(.requests))
+        KEEP(*(.requests_end_marker))
+    }
+
     /* Text/code section */
     .text ALIGN(4K) : {
         KEEP(*(.text._start))    /* Entry point first */
