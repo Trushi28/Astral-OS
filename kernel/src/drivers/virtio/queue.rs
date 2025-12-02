@@ -8,6 +8,7 @@ const QUEUE_SIZE: u16 = 128;
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
+const VIRTQ_AVAIL_F_NO_INTERRUPT: u16 = 1;
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug)]
@@ -110,6 +111,8 @@ impl Virtqueue {
         core::ptr::write_bytes(avail, 0, 1);
         core::ptr::write_bytes(used, 0, 1);
         
+        (*avail).flags = VIRTQ_AVAIL_F_NO_INTERRUPT;
+
         let mut free_desc = [false; QUEUE_SIZE as usize];
         for i in 0..queue_size as usize {
             free_desc[i] = true;

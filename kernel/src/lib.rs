@@ -16,6 +16,7 @@ pub mod fs;
 pub mod reality;
 pub mod shell;
 pub mod util;
+pub mod power;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

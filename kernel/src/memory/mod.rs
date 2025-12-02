@@ -2,6 +2,7 @@
 pub mod frame;
 pub mod paging;
 pub mod heap;
+pub mod fractal;
 
 pub use frame::{PhysAddr, allocate_frame, deallocate_frame};
 pub use paging::{VirtAddr, PageTableEntry, PageTableManager};
@@ -26,6 +27,9 @@ pub fn init() {
     // Initialize heap
     heap::init();
     
+    // Initialize fractal allocator
+    fractal::init();
+    
     // Print stats
     let (total, used, free) = frame::get_stats();
     crate::println!("  Frames: {} total, {} used, {} free", total, used, free);
@@ -35,4 +39,8 @@ pub fn init() {
     let (heap_used, heap_free) = heap::get_stats();
     crate::println!("  Heap: {} KB used, {} KB free",
         heap_used / 1024, heap_free / 1024);
+    
+    if let Some(stats) = fractal::get_fractal_stats() {
+        crate::println!("  Fractal: Initialized");
+    }
 }

@@ -97,7 +97,7 @@ run-disk: iso disk-img
 	qemu-system-x86_64 \
 		-cdrom astral.iso \
 		-drive file=astral-disk.img,format=raw,if=none,id=disk0 \
-		-device virtio-blk-pci,drive=disk0 \
+		-device virtio-blk-pci,drive=disk0,disable-legacy=on\
 		-m 512M \
 		-serial stdio \
 		-boot d

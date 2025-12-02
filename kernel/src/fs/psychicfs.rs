@@ -1,10 +1,11 @@
-//src/mod/psychicfs.rs
+//src/fs/psychicfs.rs
 use crate::drivers::virtio::{disk_read_sector, disk_write_sector, disk_is_present};
 use alloc::vec::Vec;
 use alloc::string::String;
 use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-const FS_MAGIC: u32 = 0x50535946;
+const FS_MAGIC: u32 = 0x50535946; // "PSYF"
 const FS_VERSION: u16 = 1;
 const SUPERBLOCK_SECTOR: u64 = 0;
 const INODE_TABLE_START: u64 = 1;
@@ -28,7 +29,8 @@ pub struct Superblock {
     pub free_inodes: u32,
     pub first_data_block: u32,
     pub block_size: u16,
-    pub _reserved: [u8; 486],
+    pub dirty: u8,          // NEW: Dirty flag
+    pub _reserved: [u8; 485],
 }
 
 #[repr(C)]
@@ -42,7 +44,8 @@ pub struct Inode {
     pub modified_time: u64,
     pub blocks: [u32; MAX_FILE_BLOCKS],
     pub name: [u8; MAX_FILENAME_LEN],
-    pub _reserved: [u8; 8],
+    pub dirty: u8,          // NEW: Dirty flag
+    pub _reserved: [u8; 7],
 }
 
 impl Inode {
@@ -56,7 +59,8 @@ impl Inode {
             modified_time: 0,
             blocks: [0; MAX_FILE_BLOCKS],
             name: [0; MAX_FILENAME_LEN],
-            _reserved: [0; 8],
+            dirty: 0,
+            _reserved: [0; 7],
         }
     }
     
@@ -78,6 +82,8 @@ pub struct PsychicFs {
     pub mounted: bool,
     pub superblock: Superblock,
     pub block_bitmap: [u8; 1024],
+    pub bitmap_dirty: AtomicBool,
+    pub superblock_dirty: AtomicBool,
 }
 
 impl PsychicFs {
@@ -86,7 +92,44 @@ impl PsychicFs {
             mounted: false,
             superblock: unsafe { core::mem::zeroed() },
             block_bitmap: [0; 1024],
+            bitmap_dirty: AtomicBool::new(false),
+            superblock_dirty: AtomicBool::new(false),
         }
+    }
+    
+    pub fn mark_dirty(&self) {
+        self.bitmap_dirty.store(true, Ordering::Release);
+        self.superblock_dirty.store(true, Ordering::Release);
+    }
+    
+    pub fn sync(&mut self) -> bool {
+        if !self.mounted {
+            return true; // Nothing to sync
+        }
+        
+        let mut success = true;
+        
+        // Sync bitmap if dirty
+        if self.bitmap_dirty.load(Ordering::Acquire) {
+            if self.write_bitmap_to_disk() {
+                self.bitmap_dirty.store(false, Ordering::Release);
+            } else {
+                success = false;
+            }
+        }
+        
+        // Sync superblock if dirty
+        if self.superblock_dirty.load(Ordering::Acquire) {
+            self.superblock.dirty = 0;
+            let sb_bytes = superblock_to_bytes(&self.superblock);
+            if disk_write_sector(SUPERBLOCK_SECTOR, &sb_bytes) {
+                self.superblock_dirty.store(false, Ordering::Release);
+            } else {
+                success = false;
+            }
+        }
+        
+        success
     }
     
     pub fn write_bitmap_to_disk(&self) -> bool {
@@ -170,7 +213,8 @@ pub fn fs_format() -> bool {
         free_inodes: MAX_FILES as u32,
         first_data_block: DATA_BLOCKS_START as u32,
         block_size: BLOCK_SIZE as u16,
-        _reserved: [0; 486],
+        dirty: 0,
+        _reserved: [0; 485],
     };
     
     let sb_bytes = superblock_to_bytes(&superblock);
@@ -219,13 +263,31 @@ pub fn fs_mount() -> bool {
     pfs.superblock = superblock;
     pfs.mounted = true;
     
+    // Check if filesystem was dirty (unclean unmount)
+    if superblock.dirty != 0 {
+        crate::println!("Warning: Filesystem was not cleanly unmounted");
+        // Could run fsck here
+    }
+    
+    // Mark as dirty (will be cleared on sync)
+    pfs.superblock.dirty = 1;
+    pfs.superblock_dirty.store(true, Ordering::Release);
+    
     *PSYCHIC_FS.lock() = Some(pfs);
     
     true
 }
 
 pub fn fs_unmount() {
+    fs_sync();
     *PSYCHIC_FS.lock() = None;
+}
+
+pub fn fs_sync() {
+    let mut fs = PSYCHIC_FS.lock();
+    if let Some(ref mut pfs) = *fs {
+        pfs.sync();
+    }
 }
 
 fn find_inode_by_name(name: &str) -> Option<(u32, Inode)> {
@@ -301,7 +363,7 @@ fn allocate_block() -> Option<u32> {
             
             if pfs.block_bitmap[byte_idx] & (1 << bit_idx) == 0 {
                 pfs.block_bitmap[byte_idx] |= 1 << bit_idx;
-                let _ = pfs.write_bitmap_to_disk();
+                pfs.mark_dirty();
                 return Some(DATA_BLOCKS_START as u32 + i as u32);
             }
         }
@@ -322,7 +384,7 @@ fn free_block(block_num: u32) {
         
         if byte_idx < 1024 {
             pfs.block_bitmap[byte_idx] &= !(1 << bit_idx);
-            let _ = pfs.write_bitmap_to_disk();
+            pfs.mark_dirty();
         }
     }
 }
@@ -369,6 +431,7 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
         return false;
     }
     
+    // Free excess blocks
     for i in blocks_needed..MAX_FILE_BLOCKS {
         let block = inode.blocks[i];
         if block != 0 {
@@ -377,6 +440,7 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
         }
     }
     
+    // Write data
     for i in 0..blocks_needed {
         let block = if inode.blocks[i] != 0 {
             inode.blocks[i]
@@ -403,6 +467,7 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
     
     inode.size = data.len() as u32;
     inode.modified_time = crate::get_timestamp();
+    inode.dirty = 1;
     
     write_inode(inode_num, &inode)
 }
