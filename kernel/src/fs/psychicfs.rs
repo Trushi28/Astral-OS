@@ -29,7 +29,7 @@ pub struct Superblock {
     pub free_inodes: u32,
     pub first_data_block: u32,
     pub block_size: u16,
-    pub dirty: u8,          // NEW: Dirty flag
+    pub dirty: u8,
     pub _reserved: [u8; 485],
 }
 
@@ -44,7 +44,7 @@ pub struct Inode {
     pub modified_time: u64,
     pub blocks: [u32; MAX_FILE_BLOCKS],
     pub name: [u8; MAX_FILENAME_LEN],
-    pub dirty: u8,          // NEW: Dirty flag
+    pub dirty: u8,
     pub _reserved: [u8; 7],
 }
 
@@ -97,19 +97,18 @@ impl PsychicFs {
         }
     }
     
-    pub fn mark_dirty(&self) {
+    pub fn mark_dirty(&mut self) {
         self.bitmap_dirty.store(true, Ordering::Release);
         self.superblock_dirty.store(true, Ordering::Release);
     }
     
     pub fn sync(&mut self) -> bool {
         if !self.mounted {
-            return true; // Nothing to sync
+            return true;
         }
         
         let mut success = true;
         
-        // Sync bitmap if dirty
         if self.bitmap_dirty.load(Ordering::Acquire) {
             if self.write_bitmap_to_disk() {
                 self.bitmap_dirty.store(false, Ordering::Release);
@@ -118,7 +117,6 @@ impl PsychicFs {
             }
         }
         
-        // Sync superblock if dirty
         if self.superblock_dirty.load(Ordering::Acquire) {
             self.superblock.dirty = 0;
             let sb_bytes = superblock_to_bytes(&self.superblock);
@@ -158,6 +156,40 @@ impl PsychicFs {
         self.block_bitmap[512..1024].copy_from_slice(&sector2);
         
         true
+    }
+    
+    /// Check if a block is allocated
+    pub fn is_block_allocated(&self, block_num: u32) -> bool {
+        if block_num < DATA_BLOCKS_START as u32 {
+            return true; // Reserved blocks always "allocated"
+        }
+        
+        let idx = (block_num - DATA_BLOCKS_START as u32) as usize;
+        let byte_idx = idx / 8;
+        let bit_idx = idx % 8;
+        
+        if byte_idx >= 1024 {
+            return true;
+        }
+        
+        (self.block_bitmap[byte_idx] & (1 << bit_idx)) != 0
+    }
+    
+    /// Get free block count
+    pub fn count_free_blocks(&self) -> u32 {
+        let mut count = 0;
+        let max_blocks = 8192 - DATA_BLOCKS_START as usize;
+        
+        for i in 0..max_blocks.min(1024 * 8) {
+            let byte_idx = i / 8;
+            let bit_idx = i % 8;
+            
+            if (self.block_bitmap[byte_idx] & (1 << bit_idx)) == 0 {
+                count += 1;
+            }
+        }
+        
+        count
     }
 }
 
@@ -201,8 +233,11 @@ fn bytes_to_inode(buffer: &[u8]) -> Inode {
 
 pub fn fs_format() -> bool {
     if !disk_is_present() {
+        crate::serial_println!("[FS] Format failed: No disk present");
         return false;
     }
+    
+    crate::serial_println!("[FS] Formatting PsychicFS...");
     
     let superblock = Superblock {
         magic: FS_MAGIC,
@@ -219,59 +254,70 @@ pub fn fs_format() -> bool {
     
     let sb_bytes = superblock_to_bytes(&superblock);
     if !disk_write_sector(SUPERBLOCK_SECTOR, &sb_bytes) {
+        crate::serial_println!("[FS] Failed to write superblock");
         return false;
     }
     
+    // Clear inode table
     let empty_sector = [0u8; 512];
     for i in 0..INODE_TABLE_SECTORS {
         if !disk_write_sector(INODE_TABLE_START + i, &empty_sector) {
+            crate::serial_println!("[FS] Failed to clear inode table at sector {}", i);
             return false;
         }
     }
     
+    // Clear bitmap (all blocks free)
     if !disk_write_sector(BITMAP_SECTOR, &empty_sector) {
+        crate::serial_println!("[FS] Failed to write bitmap sector 1");
         return false;
     }
     if !disk_write_sector(BITMAP_SECTOR + 1, &empty_sector) {
+        crate::serial_println!("[FS] Failed to write bitmap sector 2");
         return false;
     }
     
+    crate::serial_println!("[FS] Format complete");
     true
 }
 
 pub fn fs_mount() -> bool {
     if !disk_is_present() {
+        crate::serial_println!("[FS] Mount failed: No disk present");
         return false;
     }
     
     let mut sb_buffer = [0u8; 512];
     if !disk_read_sector(SUPERBLOCK_SECTOR, &mut sb_buffer) {
+        crate::serial_println!("[FS] Failed to read superblock");
         return false;
     }
     
     let superblock = bytes_to_superblock(&sb_buffer);
     
     if superblock.magic != FS_MAGIC {
+        crate::serial_println!("[FS] Invalid magic: 0x{:08x}", superblock.magic);
         return false;
     }
     
     let mut pfs = PsychicFs::new();
     if !pfs.read_bitmap_from_disk() {
+        crate::serial_println!("[FS] Failed to read bitmap");
         return false;
     }
     
     pfs.superblock = superblock;
     pfs.mounted = true;
     
-    // Check if filesystem was dirty (unclean unmount)
     if superblock.dirty != 0 {
         crate::println!("Warning: Filesystem was not cleanly unmounted");
-        // Could run fsck here
     }
     
-    // Mark as dirty (will be cleared on sync)
     pfs.superblock.dirty = 1;
     pfs.superblock_dirty.store(true, Ordering::Release);
+    
+    let free_blocks = pfs.count_free_blocks();
+    crate::serial_println!("[FS] Mounted: {} free blocks", free_blocks);
     
     *PSYCHIC_FS.lock() = Some(pfs);
     
@@ -339,21 +385,29 @@ fn write_inode(inode_num: u32, inode: &Inode) -> bool {
     
     let mut buffer = [0u8; 512];
     if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
+        crate::serial_println!("[FS] Failed to read inode sector for write");
         return false;
     }
     
     let inode_bytes = inode_to_bytes(inode);
     buffer[offset..offset + 128].copy_from_slice(&inode_bytes);
     
-    disk_write_sector(INODE_TABLE_START + sector, &buffer)
+    if !disk_write_sector(INODE_TABLE_START + sector, &buffer) {
+        crate::serial_println!("[FS] Failed to write inode sector");
+        return false;
+    }
+    
+    true
 }
 
+/// THE FIX: Improved block allocation with better debugging
 fn allocate_block() -> Option<u32> {
     let mut fs = PSYCHIC_FS.lock();
     if let Some(ref mut pfs) = *fs {
         let max_blocks = 8192 - DATA_BLOCKS_START as usize;
         
-        for i in 0..max_blocks {
+        // Search for free block
+        for i in 0..max_blocks.min(1024 * 8) {
             let byte_idx = i / 8;
             let bit_idx = i % 8;
             
@@ -361,13 +415,36 @@ fn allocate_block() -> Option<u32> {
                 break;
             }
             
+            // Check if block is free
             if pfs.block_bitmap[byte_idx] & (1 << bit_idx) == 0 {
+                // Mark as allocated
                 pfs.block_bitmap[byte_idx] |= 1 << bit_idx;
                 pfs.mark_dirty();
-                return Some(DATA_BLOCKS_START as u32 + i as u32);
+                
+                let block_num = DATA_BLOCKS_START as u32 + i as u32;
+                
+                // Update superblock
+                if pfs.superblock.free_blocks > 0 {
+                    pfs.superblock.free_blocks -= 1;
+                }
+                
+                crate::serial_println!("[FS] Allocated block {} (byte={}, bit={})", 
+                    block_num, byte_idx, bit_idx);
+                
+                return Some(block_num);
             }
         }
+        
+        crate::serial_println!("[FS] No free blocks available!");
+        crate::serial_println!("[FS] Free blocks according to superblock: {}", pfs.superblock.free_blocks);
+        
+        // Debug: Count actual free blocks
+        let actual_free = pfs.count_free_blocks();
+        crate::serial_println!("[FS] Actual free blocks in bitmap: {}", actual_free);
+    } else {
+        crate::serial_println!("[FS] Filesystem not mounted!");
     }
+    
     None
 }
 
@@ -385,22 +462,31 @@ fn free_block(block_num: u32) {
         if byte_idx < 1024 {
             pfs.block_bitmap[byte_idx] &= !(1 << bit_idx);
             pfs.mark_dirty();
+            
+            pfs.superblock.free_blocks += 1;
+            
+            crate::serial_println!("[FS] Freed block {}", block_num);
         }
     }
 }
 
 pub fn fs_create(name: &str) -> bool {
     if name.len() >= MAX_FILENAME_LEN {
+        crate::serial_println!("[FS] Create failed: name too long");
         return false;
     }
     
     if find_inode_by_name(name).is_some() {
+        crate::serial_println!("[FS] Create failed: file already exists");
         return false;
     }
     
     let inode_num = match find_free_inode() {
         Some(n) => n,
-        None => return false,
+        None => {
+            crate::serial_println!("[FS] Create failed: no free inodes");
+            return false;
+        }
     };
     
     let mut inode = Inode::new();
@@ -409,25 +495,44 @@ pub fn fs_create(name: &str) -> bool {
     inode.created_time = crate::get_timestamp();
     inode.modified_time = crate::get_timestamp();
     
+    crate::serial_println!("[FS] Creating file '{}' at inode {}", name, inode_num);
+    
     write_inode(inode_num, &inode)
 }
 
 pub fn fs_write(name: &str, data: &[u8]) -> bool {
+    crate::serial_println!("[FS] Writing {} bytes to '{}'", data.len(), name);
+    
     let (inode_num, mut inode) = match find_inode_by_name(name) {
-        Some(i) => i,
+        Some(i) => {
+            crate::serial_println!("[FS] Found existing file at inode {}", i.0);
+            i
+        },
         None => {
+            crate::serial_println!("[FS] File not found, creating...");
             if !fs_create(name) {
+                crate::serial_println!("[FS] Failed to create file");
                 return false;
             }
             match find_inode_by_name(name) {
-                Some(i) => i,
-                None => return false,
+                Some(i) => {
+                    crate::serial_println!("[FS] Created at inode {}", i.0);
+                    i
+                },
+                None => {
+                    crate::serial_println!("[FS] Critical error: file disappeared after creation");
+                    return false;
+                }
             }
         }
     };
     
     let blocks_needed = (data.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    crate::serial_println!("[FS] Need {} blocks", blocks_needed);
+    
     if blocks_needed > MAX_FILE_BLOCKS {
+        crate::serial_println!("[FS] File too large: need {} blocks, max is {}", 
+            blocks_needed, MAX_FILE_BLOCKS);
         return false;
     }
     
@@ -435,22 +540,36 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
     for i in blocks_needed..MAX_FILE_BLOCKS {
         let block = inode.blocks[i];
         if block != 0 {
+            crate::serial_println!("[FS] Freeing excess block {}", block);
             free_block(block);
             inode.blocks[i] = 0;
         }
     }
     
-    // Write data
+    // Allocate and write blocks
     for i in 0..blocks_needed {
         let block = if inode.blocks[i] != 0 {
+            crate::serial_println!("[FS] Reusing block {} for chunk {}", inode.blocks[i], i);
             inode.blocks[i]
         } else {
             match allocate_block() {
                 Some(b) => {
+                    crate::serial_println!("[FS] Allocated new block {} for chunk {}", b, i);
                     inode.blocks[i] = b;
                     b
                 }
-                None => return false,
+                None => {
+                    crate::serial_println!("[FS] FATAL: Failed to allocate block {} of {}", i, blocks_needed);
+                    
+                    // Cleanup: free any blocks we allocated
+                    for j in 0..i {
+                        if inode.blocks[j] != 0 {
+                            free_block(inode.blocks[j]);
+                            inode.blocks[j] = 0;
+                        }
+                    }
+                    return false;
+                }
             }
         };
         
@@ -461,15 +580,30 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
         buffer[..end - start].copy_from_slice(&data[start..end]);
         
         if !disk_write_sector(block as u64, &buffer) {
+            crate::serial_println!("[FS] Failed to write block {}", block);
             return false;
         }
+        
+        crate::serial_println!("[FS] Wrote {} bytes to block {}", end - start, block);
     }
     
     inode.size = data.len() as u32;
     inode.modified_time = crate::get_timestamp();
     inode.dirty = 1;
     
-    write_inode(inode_num, &inode)
+    crate::serial_println!("[FS] Updating inode {} with size {}", inode_num, inode.size);
+    
+    let success = write_inode(inode_num, &inode);
+    
+    if success {
+        // Immediately sync to disk
+        fs_sync();
+        crate::serial_println!("[FS] Write complete and synced");
+    } else {
+        crate::serial_println!("[FS] Failed to update inode");
+    }
+    
+    success
 }
 
 pub fn fs_read(name: &str) -> Option<Vec<u8>> {
