@@ -276,8 +276,19 @@ static mut KB_BUFFER: [u8; KB_BUFFER_SIZE] = [0; KB_BUFFER_SIZE];
 static KB_WRITE_POS: AtomicUsize = AtomicUsize::new(0);
 static KB_READ_POS: AtomicUsize = AtomicUsize::new(0);
 
+pub const KB_ARROW_UP: u8 = 0x80;
+pub const KB_ARROW_DOWN: u8 = 0x81;
+pub const KB_ARROW_LEFT: u8 = 0x82;
+pub const KB_ARROW_RIGHT: u8 = 0x83;
+pub const KB_HOME: u8 = 0x84;
+pub const KB_END: u8 = 0x85;
+pub const KB_DELETE: u8 = 0x86;
+
+static ESCAPE_SEQUENCE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 static CTRL_PRESSED: AtomicBool = AtomicBool::new(false);
+static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 
 // US keyboard scancode map
 static SCANCODE_TO_ASCII: [u8; 128] = [
@@ -315,12 +326,47 @@ extern "C" fn keyboard_interrupt_handler() {
     unsafe {
         let scancode = crate::util::inb(0x60);
         
+        // Handle extended scancode sequences (0xE0 prefix for arrow keys, etc.)
+        let esc_state = ESCAPE_SEQUENCE.load(Ordering::Relaxed);
+        
+        if scancode == 0xE0 {
+            ESCAPE_SEQUENCE.store(1, Ordering::Relaxed);
+            pic_send_eoi(1);
+            return;
+        }
+        
+        if esc_state == 1 {
+            ESCAPE_SEQUENCE.store(0, Ordering::Relaxed);
+            
+            // Handle extended keys
+            if scancode & 0x80 == 0 {
+                let special_key = match scancode {
+                    0x48 => Some(KB_ARROW_UP),
+                    0x50 => Some(KB_ARROW_DOWN),
+                    0x4B => Some(KB_ARROW_LEFT),
+                    0x4D => Some(KB_ARROW_RIGHT),
+                    0x47 => Some(KB_HOME),
+                    0x4F => Some(KB_END),
+                    0x53 => Some(KB_DELETE),
+                    _ => None,
+                };
+                
+                if let Some(key) = special_key {
+                    push_to_buffer(key);
+                }
+            }
+            
+            pic_send_eoi(1);
+            return;
+        }
+        
         // Handle key release
         if scancode & 0x80 != 0 {
             let released = scancode & 0x7F;
             match released {
                 0x2A | 0x36 => SHIFT_PRESSED.store(false, Ordering::Relaxed),
                 0x1D => CTRL_PRESSED.store(false, Ordering::Relaxed),
+                0x38 => ALT_PRESSED.store(false, Ordering::Relaxed),
                 _ => {}
             }
         } else {
@@ -328,8 +374,32 @@ extern "C" fn keyboard_interrupt_handler() {
             match scancode {
                 0x2A | 0x36 => SHIFT_PRESSED.store(true, Ordering::Relaxed),
                 0x1D => CTRL_PRESSED.store(true, Ordering::Relaxed),
+                0x38 => ALT_PRESSED.store(true, Ordering::Relaxed),
                 _ => {
-                    if (scancode as usize) < 128 {
+                    let ctrl = CTRL_PRESSED.load(Ordering::Relaxed);
+                    
+                    // Handle Ctrl+key combinations
+                    if ctrl {
+                        let ctrl_key = match scancode {
+                            0x1E => Some(1),   // Ctrl+A
+                            0x2E => Some(3),   // Ctrl+C
+                            0x20 => Some(4),   // Ctrl+D
+                            0x12 => Some(5),   // Ctrl+E
+                            0x25 => Some(11),  // Ctrl+K
+                            0x26 => Some(12),  // Ctrl+L
+                            0x16 => Some(21),  // Ctrl+U
+                            0x2F => Some(22),  // Ctrl+V
+                            0x11 => Some(23),  // Ctrl+W
+                            0x2D => Some(24),  // Ctrl+X
+                            0x15 => Some(25),  // Ctrl+Y
+                            0x2C => Some(26),  // Ctrl+Z
+                            _ => None,
+                        };
+                        
+                        if let Some(key) = ctrl_key {
+                            push_to_buffer(key);
+                        }
+                    } else if (scancode as usize) < 128 {
                         let ascii = if SHIFT_PRESSED.load(Ordering::Relaxed) {
                             SCANCODE_TO_ASCII_SHIFT[scancode as usize]
                         } else {
@@ -337,13 +407,7 @@ extern "C" fn keyboard_interrupt_handler() {
                         };
                         
                         if ascii != 0 {
-                            let write = KB_WRITE_POS.load(Ordering::Relaxed);
-                            let next = (write + 1) % KB_BUFFER_SIZE;
-                            
-                            if next != KB_READ_POS.load(Ordering::Relaxed) {
-                                KB_BUFFER[write] = ascii;
-                                KB_WRITE_POS.store(next, Ordering::Release);
-                            }
+                            push_to_buffer(ascii);
                         }
                     }
                 }
@@ -351,6 +415,18 @@ extern "C" fn keyboard_interrupt_handler() {
         }
         
         pic_send_eoi(1);
+    }
+}
+
+fn push_to_buffer(byte: u8) {
+    unsafe {
+        let write = KB_WRITE_POS.load(Ordering::Relaxed);
+        let next = (write + 1) % KB_BUFFER_SIZE;
+        
+        if next != KB_READ_POS.load(Ordering::Relaxed) {
+            KB_BUFFER[write] = byte;
+            KB_WRITE_POS.store(next, Ordering::Release);
+        }
     }
 }
 
@@ -375,7 +451,6 @@ pub fn getchar_blocking() -> u8 {
         unsafe { asm!("hlt"); }
     }
 }
-
 // Syscall handler
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_wrapper() {

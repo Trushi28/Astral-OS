@@ -107,14 +107,14 @@ pub extern "C" fn _start() -> ! {
     
     // Boot banner
     serial_println(b"[2/10] Printing banner...");
-    drivers::framebuffer::print_colored("╔═══════════════════════════════════════════╗\n", 0x00AAFF);
-    drivers::framebuffer::print_colored("║      ", 0x00AAFF);
+    drivers::framebuffer::print_colored("+===========================================+\n", 0x00AAFF);   
+    drivers::framebuffer::print_colored("|      ", 0x00AAFF);
     drivers::framebuffer::print_colored("ASTRAL OS", 0xFFFFFF);
-    drivers::framebuffer::print_colored(" v0.3.0                 ║\n", 0x00AAFF);
-    drivers::framebuffer::print_colored("║  ", 0x00AAFF);
+    drivers::framebuffer::print_colored(" v0.3.0                 |\n", 0x00AAFF);
+    drivers::framebuffer::print_colored("|  ", 0x00AAFF);
     drivers::framebuffer::print_colored("Modern Foundation + Reality Engine", 0x888888);
-    drivers::framebuffer::print_colored("   ║\n", 0x00AAFF);
-    drivers::framebuffer::print_colored("╚═══════════════════════════════════════════╝\n", 0x00AAFF);
+    drivers::framebuffer::print_colored("   |\n", 0x00AAFF);
+    drivers::framebuffer::print_colored("+===========================================+\n", 0x00AAFF);
     println!();
     serial_println(b"[1/10] Banner printed");
     
@@ -180,12 +180,12 @@ pub extern "C" fn _start() -> ! {
     serial_println(b"=== BOOT COMPLETE ===");
     
     println!();
-    drivers::framebuffer::print_colored("╔═══════════════════════════════════════════╗\n", 0x00AA00);
-    drivers::framebuffer::print_colored("║  ✓ All systems operational                ║\n", 0x00FF00);
-    drivers::framebuffer::print_colored("║  ✓ Reality Engine: ACTIVE                 ║\n", 0x00FF00);
-    drivers::framebuffer::print_colored("║  ✓ Dream State: STANDBY                   ║\n", 0x00FF00);
-    drivers::framebuffer::print_colored("║  ✓ Multiverse Layer: READY                ║\n", 0x00FF00);
-    drivers::framebuffer::print_colored("╚═══════════════════════════════════════════╝\n", 0x00AA00);
+    drivers::framebuffer::print_colored("+===========================================+\n", 0x00AA00);
+    drivers::framebuffer::print_colored("|  ✓ All systems operational                |\n", 0x00FF00);
+    drivers::framebuffer::print_colored("|  ✓ Reality Engine: ACTIVE                 |\n", 0x00FF00);
+    drivers::framebuffer::print_colored("|  ✓ Dream State: STANDBY                   |\n", 0x00FF00);
+    drivers::framebuffer::print_colored("|  ✓ Multiverse Layer: READY                |\n", 0x00FF00);
+    drivers::framebuffer::print_colored("+===========================================+\n", 0x00AA00);
     println!();
     
     serial_println(b"[7/10] Starting interactive shell...");
@@ -322,9 +322,9 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println(b"<see framebuffer>");
     
     // Try framebuffer (may not work)
-    drivers::framebuffer::print_colored("\n╔═══════════════════════════════════════════╗\n", 0xFF0000);
-    drivers::framebuffer::print_colored("║           KERNEL PANIC                    ║\n", 0xFF0000);
-    drivers::framebuffer::print_colored("╚═══════════════════════════════════════════╝\n", 0xFF0000);
+    drivers::framebuffer::print_colored("\n+===========================================+\n", 0xFF0000);
+    drivers::framebuffer::print_colored("|           KERNEL PANIC                    |\n", 0xFF0000);
+    drivers::framebuffer::print_colored("+===========================================+\n", 0xFF0000);
     
     if let Some(location) = info.location() {
         println!("at {}:{}:{}", 

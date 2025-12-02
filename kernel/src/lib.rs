@@ -87,7 +87,7 @@ pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 #[used]
 #[link_section = ".requests"]
 static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new()
-    .with_size(0x80000); // 64KB stack
+    .with_size(0x10000); // 64KB stack
 
 // End marker - MUST be last
 #[used]

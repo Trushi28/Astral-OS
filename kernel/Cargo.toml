@@ -14,9 +14,7 @@ path = "src/main.rs"
 [dependencies]
 spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
 limine = "0.5"
-fontdue = { version = "0.9", default-features = false, features = ["hashbrown"] }
-ahash = { version = "0.8.7", default-features = false }
-hashbrown = { version = "0.14", default-features = false, features = ["ahash", "inline-more"] }
+noto-sans-mono-bitmap = { version = "0.3.1", default-features = false, features = ["size_20", "regular" ,"unicode-basic-latin","unicode-latin-1-supplement"]}
 bitflags = "2.4"
 
 [build-dependencies]

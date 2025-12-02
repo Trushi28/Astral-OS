@@ -1,49 +1,15 @@
+//src/drivers/framebuffer.rs
 use core::ptr::write_volatile;
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::mem::ManuallyDrop;
 use spin::Mutex;
-use fontdue::{Font, FontSettings};
-use crate::util::{outb, inb};
-fn debug_print_dec(mut val: usize) {
-    let com1 = 0x3F8;
-    unsafe {
-        if val == 0 {
-            while (inb(com1 + 5) & 0x20) == 0 {}
-            outb(com1, b'0');
-            return;
-        }
+use noto_sans_mono_bitmap::{
+    get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
+};
 
-        let mut buffer = [0u8; 20];
-        let mut i = 0;
-
-        while val > 0 {
-            buffer[19 - i] = b'0' + (val % 10) as u8;
-            val /= 10;
-            i += 1;
-        }
-
-        for &byte in &buffer[20 - i..] {
-            while (inb(com1 + 5) & 0x20) == 0 {}
-            outb(com1, byte);
-        }
-    }
-}
-
-fn debug_print(msg: &[u8]) {
-    let com1 = 0x3F8;
-    unsafe {
-        for &byte in msg {
-            while (inb(com1 + 5) & 0x20) == 0 {}
-            outb(com1, byte);
-        }
-        // Print newline
-        while (inb(com1 + 5) & 0x20) == 0 {}
-        outb(com1, b'\n');
-        while (inb(com1 + 5) & 0x20) == 0 {}
-        outb(com1, b'\r');
-    }
-}
-const FONT_DATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/SpaceMono-Regular.ttf"));
+const FONT_SIZE: RasterHeight = RasterHeight::Size20;
+const CHAR_WIDTH: usize = 12;
+const CHAR_HEIGHT: usize = 20;
+const LINE_HEIGHT: usize = 23;
 
 pub struct Framebuffer {
     addr: *mut u32,
@@ -53,15 +19,6 @@ pub struct Framebuffer {
     x: usize,
     y: usize,
     
-    // Font rendering
-    font: Font,
-    font_size: f32,
-    line_height: usize,
-    
-    // Calculated once at startup for consistent grid layout
-    char_width: usize,
-    
-    // Colors
     fg_color: u32,
     bg_color: u32,
 }
@@ -71,34 +28,6 @@ unsafe impl Sync for Framebuffer {}
 
 impl Framebuffer {
     pub fn new(addr: *mut u8, width: usize, height: usize, pitch: usize, bpp: u16) -> Self {
-        // Load font with fontdue
-        debug_print(b"[DEBUG] FB: Checking Font Data...");
-        let len = FONT_DATA.len();
-        debug_print(b"[DEBUG] FB: Font bytes found:");
-        debug_print_dec(len); // No
-        if len == 0 {
-            debug_print(b"[FATAL] FB: Font file is empty or missing!");
-            loop {}
-        }
-
-        debug_print(b"[DEBUG] FB: Parsing font with fontdue...");
-
-        let font = Font::from_bytes(FONT_DATA, FontSettings::default())
-            .expect("Failed to load font");
-        debug_print(b"[DEBUG] FB: Font parsed successfully!");
-        let font_size = 16.0;
-        let line_height = 20; // Slightly more than font size for spacing
-        
-        // Calculate fixed character width using a standard char (like 'A' or '0')
-        // This enforces a strict grid, making backspace and tabs robust.
-        let metrics = font.metrics('A', font_size);
-        let advance = metrics.advance_width;
-        let char_width = if advance > (advance as usize as f32) {
-            (advance as usize) + 1
-        } else {
-            advance as usize
-        };
-        
         Self {
             addr: addr as *mut u32,
             width,
@@ -106,16 +35,11 @@ impl Framebuffer {
             pitch: pitch / (bpp as usize / 8),
             x: 0,
             y: 0,
-            font,
-            font_size,
-            line_height,
-            char_width,
             fg_color: 0xFFFFFF,
             bg_color: 0x000000,
         }
     }
     
-    /// Clear screen
     pub fn clear(&mut self) {
         self.clear_with_color(self.bg_color);
         self.x = 0;
@@ -134,7 +58,6 @@ impl Framebuffer {
         }
     }
     
-    /// Put pixel
     #[inline]
     fn put_pixel(&self, x: usize, y: usize, color: u32) {
         if x >= self.width || y >= self.height {
@@ -148,149 +71,155 @@ impl Framebuffer {
         }
     }
     
-    /// Draw character using fontdue
     pub fn draw_char(&mut self, c: char, fg: u32, bg: u32) {
         match c {
             '\n' => {
-                self.newline();
+                self.x = 0;
+                self.y += LINE_HEIGHT;
+                if self.y + LINE_HEIGHT > self.height {
+                    self.scroll();
+                }
             }
             '\r' => {
                 self.x = 0;
             }
             '\t' => {
-                // Perfect grid alignment logic
-                let tab_size = 4 * self.char_width;
-                // Calculate distance to next tab stop
+                let tab_size = 4 * CHAR_WIDTH;
                 let next_tab = (self.x / tab_size + 1) * tab_size;
                 self.x = next_tab;
                 
-                // Wrap if we go past edge
                 if self.x >= self.width {
-                    self.newline();
+                    self.x = 0;
+                    self.y += LINE_HEIGHT;
+                    if self.y + LINE_HEIGHT > self.height {
+                        self.scroll();
+                    }
                 }
             }
-            '\x08' | '\x7F' => { // Backspace / DEL
+            '\x08' | '\x7F' => {
                 self.backspace();
             }
             _ => {
-                // Rasterize character
-                let (metrics, bitmap) = self.font.rasterize(c, self.font_size);
+                let raster = get_raster(c, FontWeight::Regular, FONT_SIZE);
                 
-                // Draw background for the specific cell size
-                // We use char_width here to ensure we fill the whole "grid cell" background
-                for row in 0..self.line_height {
-                    for col in 0..self.char_width {
-                        if self.x + col < self.width && self.y + row < self.height {
-                            self.put_pixel(self.x + col, self.y + row, bg);
+                if let Some(raster) = raster {
+                    let char_width = raster.width();
+                    
+                    // Draw background for the character
+                    for row in 0..CHAR_HEIGHT {
+                        for col in 0..char_width {
+                            if self.x + col < self.width && self.y + row < self.height {
+                                self.put_pixel(self.x + col, self.y + row, bg);
+                            }
                         }
                     }
-                }
-                
-                // Draw glyph
-                for row in 0..metrics.height {
-                    for col in 0..metrics.width {
-                        let bitmap_idx = row * metrics.width + col;
-                        if bitmap_idx < bitmap.len() {
-                            let alpha = bitmap[bitmap_idx];
-                            
-                            if alpha > 0 {
-                                // Alpha blend
-                                let color = if alpha == 255 {
+                    
+                    // Draw character bitmap with proper alpha blending
+                    for (row_idx, row) in raster.raster().iter().enumerate() {
+                        for (col_idx, &intensity) in row.iter().enumerate() {
+                            if intensity > 0 {
+                                let color = if intensity > 127 {
                                     fg
                                 } else {
-                                    self.blend_colors(fg, bg, alpha)
+                                    // Alpha blend for anti-aliasing
+                                    let alpha = intensity as u32;
+                                    let inv_alpha = 255 - alpha;
+                                    
+                                    let fg_r = (fg >> 16) & 0xFF;
+                                    let fg_g = (fg >> 8) & 0xFF;
+                                    let fg_b = fg & 0xFF;
+                                    
+                                    let bg_r = (bg >> 16) & 0xFF;
+                                    let bg_g = (bg >> 8) & 0xFF;
+                                    let bg_b = bg & 0xFF;
+                                    
+                                    let r = (fg_r * alpha + bg_r * inv_alpha) / 255;
+                                    let g = (fg_g * alpha + bg_g * inv_alpha) / 255;
+                                    let b = (fg_b * alpha + bg_b * inv_alpha) / 255;
+                                    
+                                    (r << 16) | (g << 8) | b
                                 };
                                 
-                                // Calculate position
-                                let px = self.x + col;
+                                let px = self.x + col_idx;
+                                let py = self.y + row_idx;
                                 
-                                // SAFE Y CALCULATION:
-                                // ymin is i32 and can be negative. 
-                                // We must use i32 arithmetic before casting to usize.
-                                let base_y = self.y as i32 + metrics.ymin;
-                                let py = base_y + row as i32;
-                                
-                                // Bounds check using signed comparison for y
-                                if px < self.width && py >= 0 && (py as usize) < self.height {
-                                    self.put_pixel(px, py as usize, color);
+                                if px < self.width && py < self.height {
+                                    self.put_pixel(px, py, color);
                                 }
                             }
                         }
                     }
+                    
+                    self.x += char_width;
+                } else {
+                    // Character not in font - draw a replacement box
+                    self.draw_replacement_char(fg, bg);
                 }
                 
-                // Advance cursor by FIXED width, not variable metric
-                self.x += self.char_width;
+                // Handle line wrapping
+                if self.x + CHAR_WIDTH > self.width {
+                    self.x = 0;
+                    self.y += LINE_HEIGHT;
+                    if self.y + LINE_HEIGHT > self.height {
+                        self.scroll();
+                    }
+                }
+            } 
+        }
+    }
+    
+    fn draw_replacement_char(&mut self, fg: u32, bg: u32) {
+        // Draw a small box for missing characters
+        for row in 0..CHAR_HEIGHT {
+            for col in 0..CHAR_WIDTH {
+                let px = self.x + col;
+                let py = self.y + row;
                 
-                if self.x + self.char_width > self.width {
-                    self.newline();
+                if px < self.width && py < self.height {
+                    let color = if row == 0 || row == CHAR_HEIGHT - 1 || 
+                                   col == 0 || col == CHAR_WIDTH - 1 {
+                        fg
+                    } else {
+                        bg
+                    };
+                    self.put_pixel(px, py, color);
                 }
             }
         }
+        self.x += CHAR_WIDTH;
     }
     
-    /// Handle newline logic
-    fn newline(&mut self) {
-        self.x = 0;
-        self.y += self.line_height;
-        if self.y + self.line_height > self.height {
-            self.scroll();
-        }
-    }
-    
-    /// Blend two colors with alpha
-    fn blend_colors(&self, fg: u32, bg: u32, alpha: u8) -> u32 {
-        let alpha = alpha as u32;
-        let inv_alpha = 255 - alpha;
-        
-        let fg_r = (fg >> 16) & 0xFF;
-        let fg_g = (fg >> 8) & 0xFF;
-        let fg_b = fg & 0xFF;
-        
-        let bg_r = (bg >> 16) & 0xFF;
-        let bg_g = (bg >> 8) & 0xFF;
-        let bg_b = bg & 0xFF;
-        
-        let r = (fg_r * alpha + bg_r * inv_alpha) / 255;
-        let g = (fg_g * alpha + bg_g * inv_alpha) / 255;
-        let b = (fg_b * alpha + bg_b * inv_alpha) / 255;
-        
-        (r << 16) | (g << 8) | b
-    }
-    
-
     fn scroll(&mut self) {
         unsafe {
-
-            let lines_to_copy = self.height - self.line_height;
-            let src = self.addr.add(self.line_height * self.pitch);
+            // Copy screen content up by one line
+            let lines_to_copy = self.height - LINE_HEIGHT;
+            let src = self.addr.add(LINE_HEIGHT * self.pitch);
             core::ptr::copy(src, self.addr, lines_to_copy * self.pitch);
             
-
+            // Clear the last line
             let clear_start = self.addr.add(lines_to_copy * self.pitch);
-            for i in 0..(self.line_height * self.pitch) {
+            for i in 0..(LINE_HEIGHT * self.pitch) {
                 write_volatile(clear_start.add(i), self.bg_color);
             }
         }
         
-        self.y = self.height - self.line_height;
+        self.y = self.height - LINE_HEIGHT;
     }
     
-
     fn backspace(&mut self) {
-        if self.x >= self.char_width {
-            self.x -= self.char_width;
-        } else if self.y >= self.line_height {
-            self.y -= self.line_height;
-            
-            let cols = self.width / self.char_width;
-            self.x = (cols * self.char_width) - self.char_width;
+        if self.x >= CHAR_WIDTH {
+            self.x -= CHAR_WIDTH;
+        } else if self.y >= LINE_HEIGHT {
+            self.y -= LINE_HEIGHT;
+            let cols = self.width / CHAR_WIDTH;
+            self.x = (cols - 1) * CHAR_WIDTH;
         } else {
             return;
         }
         
-        for row in 0..self.line_height {
-            for col in 0..self.char_width {
+        // Clear the character space with proper height
+        for row in 0..CHAR_HEIGHT {
+            for col in 0..CHAR_WIDTH {
                 let px = self.x + col;
                 let py = self.y + row;
                 
@@ -321,13 +250,52 @@ impl Framebuffer {
         self.bg_color = color;
     }
     
-    pub fn get_cursor(&self) -> (usize, usize) {
+    pub fn get_cursor_pos(&self) -> (usize, usize) {
         (self.x, self.y)
+    }
+    
+    pub fn set_cursor_pos(&mut self, x: usize, y: usize) {
+        self.x = x;
+        self.y = y;
+    }
+    
+    pub fn clear_line(&mut self) {
+        let start_x = self.x;
+        let y = self.y;
+        
+        for row in 0..LINE_HEIGHT {
+            for x in start_x..self.width {
+                self.put_pixel(x, y + row, self.bg_color);
+            }
+        }
+    }
+    
+    pub fn clear_current_line(&mut self) {
+        let y = self.y;
+        
+        for row in 0..LINE_HEIGHT {
+            for x in 0..self.width {
+                self.put_pixel(x, y + row, self.bg_color);
+            }
+        }
+        
+        self.x = 0;
+    }
+    
+    pub fn draw_char_at(&mut self, c: char, x: usize, y: usize, fg: u32, bg: u32) {
+        let old_x = self.x;
+        let old_y = self.y;
+        
+        self.x = x;
+        self.y = y;
+        self.draw_char(c, fg, bg);
+        
+        self.x = old_x;
+        self.y = old_y;
     }
 }
 
-
-
+// Interrupt-safe mutex
 pub struct IrqSafeMutex<T> {
     data: spin::Mutex<T>,
 }
@@ -367,7 +335,6 @@ pub struct IrqSafeGuard<'a, T> {
 
 impl<'a, T> Drop for IrqSafeGuard<'a, T> {
     fn drop(&mut self) {
-        
         unsafe {
             ManuallyDrop::drop(&mut self.guard);
         }
@@ -393,8 +360,6 @@ impl<'a, T> core::ops::DerefMut for IrqSafeGuard<'a, T> {
     }
 }
 
-// --- Global Instance and Macros ---
-
 static FB: IrqSafeMutex<Option<Framebuffer>> = IrqSafeMutex::new(None);
 
 pub fn init() {
@@ -403,13 +368,16 @@ pub fn init() {
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
         if let Some(framebuffer) = fb_resp.framebuffers().next() {
             let mut fb_lock = FB.lock();
-            *fb_lock = Some(Framebuffer::new(
+            
+            let fb = Framebuffer::new(
                 framebuffer.addr(),
                 framebuffer.width() as usize,
                 framebuffer.height() as usize,
                 framebuffer.pitch() as usize,
                 framebuffer.bpp(),
-            ));
+            );
+            
+            *fb_lock = Some(fb);
         }
     }
 }
@@ -446,6 +414,36 @@ pub fn set_bg_color(color: u32) {
     let mut fb = FB.lock();
     if let Some(ref mut framebuffer) = *fb {
         framebuffer.set_bg_color(color);
+    }
+}
+
+pub fn get_cursor_pos() -> (usize, usize) {
+    let fb = FB.lock();
+    if let Some(ref framebuffer) = *fb {
+        framebuffer.get_cursor_pos()
+    } else {
+        (0, 0)
+    }
+}
+
+pub fn set_cursor_pos(x: usize, y: usize) {
+    let mut fb = FB.lock();
+    if let Some(ref mut framebuffer) = *fb {
+        framebuffer.set_cursor_pos(x, y);
+    }
+}
+
+pub fn clear_line() {
+    let mut fb = FB.lock();
+    if let Some(ref mut framebuffer) = *fb {
+        framebuffer.clear_line();
+    }
+}
+
+pub fn clear_current_line() {
+    let mut fb = FB.lock();
+    if let Some(ref mut framebuffer) = *fb {
+        framebuffer.clear_current_line();
     }
 }
 

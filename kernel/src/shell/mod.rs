@@ -2,10 +2,11 @@
 pub mod commands;
 
 use alloc::vec::Vec;
-use alloc::string::{String, ToString};
-use crate::interrupts::{getchar, getchar_blocking};
-use crate::drivers::framebuffer::{print_colored, print};
+use alloc::string::String;
+use crate::interrupts::{getchar, KB_ARROW_UP, KB_ARROW_DOWN, KB_ARROW_LEFT, KB_ARROW_RIGHT};
+use crate::drivers::framebuffer::{print_colored, print, get_cursor_pos, set_cursor_pos, clear_line};
 use core::arch::asm;
+use alloc::string::ToString;
 
 const MAX_CMD_LEN: usize = 256;
 const MAX_HISTORY: usize = 50;
@@ -49,9 +50,12 @@ impl ShellTheme {
 pub struct Shell {
     cmd_buffer: [u8; MAX_CMD_LEN],
     cmd_len: usize,
+    cursor_pos: usize,
     history: Vec<String>,
-    history_index: usize,
+    history_index: Option<usize>,
     theme: ShellTheme,
+    prompt_x: usize,
+    prompt_y: usize,
 }
 
 impl Shell {
@@ -59,9 +63,12 @@ impl Shell {
         Self {
             cmd_buffer: [0; MAX_CMD_LEN],
             cmd_len: 0,
+            cursor_pos: 0,
             history: Vec::with_capacity(MAX_HISTORY),
-            history_index: 0,
+            history_index: None,
             theme: ShellTheme::REALITY,
+            prompt_x: 0,
+            prompt_y: 0,
         }
     }
     
@@ -80,7 +87,7 @@ impl Shell {
         crate::println!();
     }
     
-    pub fn print_prompt(&self) {
+    pub fn print_prompt(&mut self) {
         use crate::reality::causality::RealityId;
         use crate::reality::dream::get_system_state;
         
@@ -100,6 +107,11 @@ impl Shell {
         }
         
         print_colored("> ", self.theme.prompt_symbol_color);
+        
+        // Save prompt position
+        let (x, y) = get_cursor_pos();
+        self.prompt_x = x;
+        self.prompt_y = y;
     }
     
     pub fn run(&mut self) {
@@ -107,40 +119,87 @@ impl Shell {
         self.print_prompt();
         
         loop {
-            if let Some(c) = getchar() {
-                match c {
+            if let Some(key) = getchar() {
+                match key {
+                    KB_ARROW_UP => {
+                        self.history_up();
+                    }
+                    KB_ARROW_DOWN => {
+                        self.history_down();
+                    }
+                    KB_ARROW_LEFT => {
+                        self.move_cursor_left();
+                    }
+                    KB_ARROW_RIGHT => {
+                        self.move_cursor_right();
+                    }
                     b'\n' => {
                         crate::println!();
                         self.execute_command();
+                        
                         if self.cmd_len > 0 {
                             let cmd = self.get_cmd_str().to_string();
-                            if self.history.len() >= MAX_HISTORY {
-                                self.history.remove(0);
+                            
+                            // Only add to history if different from last command
+                            let should_add = self.history.last()
+                                .map(|last| last != &cmd)
+                                .unwrap_or(true);
+                            
+                            if should_add {
+                                if self.history.len() >= MAX_HISTORY {
+                                    self.history.remove(0);
+                                }
+                                self.history.push(cmd);
                             }
-                            self.history.push(cmd);
-                            self.history_index = self.history.len();
                         }
                         
                         self.cmd_len = 0;
+                        self.cursor_pos = 0;
+                        self.history_index = None;
                         self.print_prompt();
                     }
                     8 | 127 => {
-                        if self.cmd_len > 0 {
-                            self.cmd_len -= 1;
-                            print("\x08 \x08");
+                        self.handle_backspace();
+                    }
+                    0x7F => { // Delete key
+                        self.handle_delete();
+                    }
+                    1 => { // Ctrl+A - Home
+                        self.cursor_pos = 0;
+                        self.redraw_line();
+                    }
+                    5 => { // Ctrl+E - End
+                        self.cursor_pos = self.cmd_len;
+                        self.redraw_line();
+                    }
+                    11 => { // Ctrl+K - Kill to end
+                        self.cmd_len = self.cursor_pos;
+                        self.redraw_line();
+                    }
+                    21 => { // Ctrl+U - Kill to start
+                        if self.cursor_pos > 0 {
+                            let remaining = self.cmd_len - self.cursor_pos;
+                            for i in 0..remaining {
+                                self.cmd_buffer[i] = self.cmd_buffer[self.cursor_pos + i];
+                            }
+                            self.cmd_len = remaining;
+                            self.cursor_pos = 0;
+                            self.redraw_line();
                         }
                     }
+                    12 => { // Ctrl+L - Clear screen
+                        crate::drivers::framebuffer::clear();
+                        self.print_prompt();
+                        self.redraw_line();
+                    }
                     32..=126 => {
-                        if self.cmd_len < MAX_CMD_LEN - 1 {
-                            self.cmd_buffer[self.cmd_len] = c;
-                            self.cmd_len += 1;
-                            crate::print!("{}", c as char);
-                        }
+                        self.insert_char(key);
                     }
                     _ => {}
                 }
             }
             
+            // Dream cycle integration
             use crate::reality::dream::{get_system_state, dream_cycle};
             if get_system_state() != crate::reality::dream::SystemState::Active {
                 dream_cycle();
@@ -148,6 +207,140 @@ impl Shell {
             
             unsafe { asm!("hlt"); }
         }
+    }
+    
+    fn insert_char(&mut self, c: u8) {
+        if self.cmd_len < MAX_CMD_LEN - 1 {
+            // Shift characters to make room
+            for i in (self.cursor_pos..self.cmd_len).rev() {
+                self.cmd_buffer[i + 1] = self.cmd_buffer[i];
+            }
+            
+            self.cmd_buffer[self.cursor_pos] = c;
+            self.cmd_len += 1;
+            self.cursor_pos += 1;
+            
+            self.redraw_line();
+        }
+    }
+    
+    fn handle_backspace(&mut self) {
+        if self.cursor_pos > 0 {
+            // Shift characters left
+            for i in self.cursor_pos..self.cmd_len {
+                self.cmd_buffer[i - 1] = self.cmd_buffer[i];
+            }
+            
+            self.cmd_len -= 1;
+            self.cursor_pos -= 1;
+            
+            self.redraw_line();
+        }
+    }
+    
+    fn handle_delete(&mut self) {
+        if self.cursor_pos < self.cmd_len {
+            // Shift characters left
+            for i in (self.cursor_pos + 1)..self.cmd_len {
+                self.cmd_buffer[i - 1] = self.cmd_buffer[i];
+            }
+            
+            self.cmd_len -= 1;
+            self.redraw_line();
+        }
+    }
+    
+    fn move_cursor_left(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+            self.update_cursor_position();
+        }
+    }
+    
+    fn move_cursor_right(&mut self) {
+        if self.cursor_pos < self.cmd_len {
+            self.cursor_pos += 1;
+            self.update_cursor_position();
+        }
+    }
+    
+    fn history_up(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        
+        let new_index = match self.history_index {
+            None => Some(self.history.len() - 1),
+            Some(0) => Some(0),
+            Some(i) => Some(i - 1),
+        };
+        
+        if let Some(idx) = new_index {
+            self.history_index = Some(idx);
+            self.load_history_command(idx);
+        }
+    }
+    
+    fn history_down(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        
+        match self.history_index {
+            None => {}
+            Some(i) if i >= self.history.len() - 1 => {
+                self.history_index = None;
+                self.clear_command();
+            }
+            Some(i) => {
+                let new_idx = i + 1;
+                self.history_index = Some(new_idx);
+                self.load_history_command(new_idx);
+            }
+        }
+    }
+    
+    fn load_history_command(&mut self, index: usize) {
+        if let Some(cmd) = self.history.get(index) {
+            self.cmd_len = 0;
+            self.cursor_pos = 0;
+            
+            for &byte in cmd.as_bytes() {
+                if self.cmd_len < MAX_CMD_LEN {
+                    self.cmd_buffer[self.cmd_len] = byte;
+                    self.cmd_len += 1;
+                }
+            }
+            
+            self.cursor_pos = self.cmd_len;
+            self.redraw_line();
+        }
+    }
+    
+    fn clear_command(&mut self) {
+        self.cmd_len = 0;
+        self.cursor_pos = 0;
+        self.redraw_line();
+    }
+    
+    fn redraw_line(&self) {
+        set_cursor_pos(self.prompt_x, self.prompt_y);
+        clear_line();
+        
+        // Redraw command with proper color
+        let cmd_str = self.get_cmd_str();
+        print_colored(cmd_str, self.theme.command_color);
+        
+        // Position cursor
+        self.update_cursor_position();
+    }
+    
+    fn update_cursor_position(&self) {
+        // Calculate cursor position based on cursor_pos
+        // Simplified: assumes fixed-width chars
+        let char_width = 12;
+        let cursor_x = self.prompt_x + (self.cursor_pos * char_width);
+        set_cursor_pos(cursor_x, self.prompt_y);
     }
     
     fn get_cmd_str(&self) -> &str {

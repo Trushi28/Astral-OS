@@ -2,7 +2,7 @@
 # ASTRAL OS - Limine Bootloader Makefile (Fixed)
 # ============================================================================
 
-.PHONY: all clean run debug kernel iso help limine font
+.PHONY: all clean run debug kernel iso help limine 
 
 KERNEL_ELF := kernel/target/x86_64-astral/release/astral-kernel
 
@@ -30,19 +30,12 @@ limine:
 	fi
 
 # Build kernel
-kernel: font
+kernel:
 	@echo "==> Building kernel..."
 	cd kernel && cargo +nightly build --release
 	@echo "==> Kernel built: $(KERNEL_ELF)"
 	@file $(KERNEL_ELF)
 
-# Generate font if missing or empty
-font:
-	@if [ ! -f kernel/SpaceMono-Regular.ttf ] || [ ! -s kernel/SpaceMono-Regular.ttf ]; then \
-		echo "==> ERROR: kernel/SpaceMono-Regular.ttf missing or empty!"; \
-		exit 1; \
-	fi
-	@echo "==> Font: kernel/SpaceMono-Regular.ttf ($(shell wc -c < kernel/SpaceMono-Regular.ttf) bytes)"
 
 # Create ISO
 iso: limine kernel

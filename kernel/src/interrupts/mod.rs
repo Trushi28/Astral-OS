@@ -6,7 +6,7 @@ pub mod handlers;
 pub use idt::init_idt;
 pub use idt::init_gdt_and_tss;
 pub use pic::init_pic;
-pub use handlers::{getchar, getchar_blocking};
+pub use handlers::{getchar, getchar_blocking, KB_ARROW_UP, KB_ARROW_DOWN, KB_ARROW_LEFT, KB_ARROW_RIGHT};
 
 pub fn init() {
     crate::println!("[4/10] GDT & TSS...");
