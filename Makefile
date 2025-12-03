@@ -132,8 +132,8 @@ debug: iso
 clean:
 	@echo "==> Cleaning..."
 	cd kernel && cargo clean
-	rm -rf iso_root astral.iso qemu.log astral-disk.img
+	rm -rf iso_root astral.iso qemu.log
 	@echo "==> Done"
 
 distclean: clean
-	rm -rf limine
+	rm -rf limine astral-disk.img
