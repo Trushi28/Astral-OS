@@ -114,6 +114,8 @@ run-uefi: iso
 	@echo "==> Starting QEMU (UEFI mode)..."
 	qemu-system-x86_64 \
 		-cdrom astral.iso \
+		-drive file=astral-disk.img,format=raw,if=none,id=disk0 \
+		-device virtio-blk-pci,drive=disk0,disable-legacy=on\
 		-m 512M \
 		-serial stdio \
 		-bios /usr/share/edk2/x64/OVMF.4m.fd

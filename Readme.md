@@ -387,5 +387,7 @@ For questions, issues, or contributions, please open an issue on GitHub.
 
 ---
 **Note: This is the modular version of Astral OS. The single-file “godfile” version is available in the Godfile-Version branch.**
+
 **Note: This OS is a hybrid one so it has some normal features as well as complex and bootable in BIOS & UEFI 64 and about RISC-V is not yet made for it**
+
 **Built with 🦀 Rust and ☕ caffeine**
