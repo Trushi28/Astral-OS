@@ -39,4 +39,4 @@ limine/*.iso
 
 # --- Cargo build dirs globally ---
 target/
-
+iso_root/

@@ -2,13 +2,13 @@
 //! SMP (Symmetric Multi-Processing) using Limine's built-in SMP support
 
 use super::cpu::{CpuId, register_ap, set_gs_base, get_gs_base_for_cpu};
-use super::apic::ApicId;
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use core::arch::asm;
 
 // AP startup synchronization
 static AP_STARTED_COUNT: AtomicU32 = AtomicU32::new(0);
-static AP_READY: AtomicBool = AtomicBool::new(false);
+static AP_INIT_LOCK: AtomicBool = AtomicBool::new(false);
+static CURRENT_AP_READY: AtomicBool = AtomicBool::new(false);
 
 /// Initialize SMP system using Limine's SMP support
 pub fn init_smp() -> Result<(), &'static str> {
@@ -39,7 +39,7 @@ pub fn init_smp() -> Result<(), &'static str> {
     let bsp_lapic_id = smp_response.bsp_lapic_id();
     crate::serial_println!("[SMP] BSP LAPIC ID: 0x{:x}", bsp_lapic_id);
     
-    // Start all APs
+    // Start APs ONE AT A TIME with synchronization to avoid race conditions
     let mut started = 0u32;
     for cpu in cpus {
         if cpu.lapic_id == bsp_lapic_id {
@@ -52,21 +52,30 @@ pub fn init_smp() -> Result<(), &'static str> {
         let cpu_id = register_ap(cpu.lapic_id)
             .ok_or("Failed to register AP")?;
         
+        // Clear ready flag before starting this AP
+        CURRENT_AP_READY.store(false, Ordering::SeqCst);
+        
         // Store CPU ID in the extra field for the AP to read
         cpu.extra.store(cpu_id.as_u8() as u64, Ordering::SeqCst);
         
+        // Memory fence to ensure all stores are visible
+        core::sync::atomic::fence(Ordering::SeqCst);
+        
         // Start the AP by writing to goto_address
-        // Limine handles all the trampoline complexity!
         cpu.goto_address.write(ap_entry);
         
+        // Wait for THIS AP to signal ready before starting next
+        let mut timeout = 10000;
+        while !CURRENT_AP_READY.load(Ordering::Acquire) && timeout > 0 {
+            for _ in 0..100 { core::hint::spin_loop(); }
+            timeout -= 1;
+        }
+        
+        if timeout == 0 {
+            crate::serial_println!("[SMP] WARNING: AP 0x{:x} startup timeout", cpu.lapic_id);
+        }
+        
         started += 1;
-    }
-    
-    // Wait for APs to start (with timeout)
-    let mut timeout = 1000; // 1 second
-    while AP_STARTED_COUNT.load(Ordering::Acquire) < started && timeout > 0 {
-        for _ in 0..10000 { core::hint::spin_loop(); }
-        timeout -= 1;
     }
     
     let actual_started = AP_STARTED_COUNT.load(Ordering::Acquire);
@@ -78,6 +87,13 @@ pub fn init_smp() -> Result<(), &'static str> {
 /// AP entry point - called by Limine when AP starts
 /// Limine provides: 64-bit mode, paging enabled, own stack, interrupts disabled
 unsafe extern "C" fn ap_entry(cpu_info: &limine::mp::Cpu) -> ! {
+    // Acquire init lock - only one AP initializes at a time
+    while AP_INIT_LOCK.compare_exchange(
+        false, true, Ordering::Acquire, Ordering::Relaxed
+    ).is_err() {
+        core::hint::spin_loop();
+    }
+    
     let lapic_id = cpu_info.lapic_id;
     let cpu_id_val = cpu_info.extra.load(Ordering::SeqCst) as u8;
     let cpu_id = CpuId::new(cpu_id_val);
@@ -95,14 +111,16 @@ unsafe extern "C" fn ap_entry(cpu_info: &limine::mp::Cpu) -> ! {
         crate::serial_println!("[SMP] CPU {} APIC init failed: {}", cpu_id_val, e);
     }
     
-    // Don't setup timer on APs for now - let BSP handle scheduling
-    // The timer interrupt would fire but we're not ready to handle it
-    // super::apic::setup_timer(32, 1000000, true);
-    
-    // Signal that we're ready (before enabling interrupts)
+    // Signal that we're ready
     AP_STARTED_COUNT.fetch_add(1, Ordering::Release);
     
     crate::serial_println!("[SMP] CPU {} online (LAPIC 0x{:x})", cpu_id_val, lapic_id);
+    
+    // Signal BSP that this AP is ready
+    CURRENT_AP_READY.store(true, Ordering::Release);
+    
+    // Release init lock so next AP can initialize
+    AP_INIT_LOCK.store(false, Ordering::Release);
     
     // Enable interrupts now that IDT is loaded
     asm!("sti");
@@ -115,13 +133,11 @@ unsafe extern "C" fn ap_entry(cpu_info: &limine::mp::Cpu) -> ! {
 fn ap_idle_loop() -> ! {
     loop {
         unsafe { asm!("hlt"); }
-        // APs currently just idle
-        // Future: integrate with scheduler for work stealing
+        // APs idle until scheduler sends them work via IPI
     }
 }
 
 /// Get number of online CPUs
 pub fn get_online_cpu_count() -> u32 {
-    // BSP + APs started
     1 + AP_STARTED_COUNT.load(Ordering::Relaxed)
 }
