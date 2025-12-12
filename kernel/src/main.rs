@@ -74,6 +74,11 @@ pub extern "C" fn _start() -> ! {
     // Now we can use heap allocations
     serial_println(b"[BOOT] Initializing ACPI...");
     
+    // CRITICAL: Disable legacy PIC BEFORE enabling APIC
+    // This prevents spurious interrupts during the transition
+    serial_println(b"[BOOT] Disabling legacy PIC early...");
+    crate::interrupts::pic::disable_pic();
+    
     // BSP APIC initialization
     serial_println(b"[BOOT] Initializing BSP APIC...");
     unsafe {
@@ -459,9 +464,6 @@ fn enable_sse() {
     }
 }
 fn disable_legacy_pic() {
-    unsafe {
-        // Mask all interrupts on both PICs
-        crate::util::outb(0x21, 0xFF);
-        crate::util::outb(0xA1, 0xFF);
-    }
+    // Use proper PIC disable sequence that remaps and masks all IRQs
+    crate::interrupts::pic::disable_pic();
 }

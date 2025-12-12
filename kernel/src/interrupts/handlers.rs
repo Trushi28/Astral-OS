@@ -162,8 +162,34 @@ extern "C" fn stack_segment_fault_handler(error_code: u64) {
 
 #[no_mangle]
 extern "C" fn general_protection_fault_handler(error_code: u64) {
-    panic!("EXCEPTION: General Protection Fault (error: 0x{:x})", error_code);
+    // Get RIP from stack if possible - the return address is at a known offset
+    let rip: u64;
+    let cs: u64;
+    unsafe {
+        // After the exception, the stack contains: [return addr, error_code, RIP, CS, RFLAGS, RSP, SS]
+        // We need to find RIP from the interrupt frame
+        asm!(
+            "mov {}, [rsp + 8]",  // RIP is after error code on stack
+            out(reg) rip,
+            options(nostack)
+        );
+        asm!(
+            "mov {}, [rsp + 16]",  // CS is after RIP
+            out(reg) cs,
+            options(nostack)
+        );
+    }
+    
+    crate::serial_println!("!!! GPF !!! error: 0x{:x}", error_code);
+    crate::serial_println!("  RIP: 0x{:x}, CS: 0x{:x}", rip, cs);
+    crate::serial_println!("  Halting to prevent storm...");
+    
+    // HALT instead of panic to prevent interrupt storm
+    loop {
+        unsafe { core::arch::asm!("cli; hlt"); }
+    }
 }
+
 
 #[no_mangle]
 extern "C" fn page_fault_handler(error_code: u64) {
@@ -172,10 +198,21 @@ extern "C" fn page_fault_handler(error_code: u64) {
         asm!("mov {}, cr2", out(reg) cr2, options(nostack, nomem));
     }
     
-    panic!(
-        "EXCEPTION: Page Fault\n  Address: 0x{:x}\n  Error: 0x{:x}",
-        cr2, error_code
-    );
+    // Check if this is an instruction fetch fault
+    let is_instruction_fetch = (error_code & 0x10) != 0;
+    let is_user_mode = (error_code & 0x4) != 0;
+    let is_write = (error_code & 0x2) != 0;
+    let is_present = (error_code & 0x1) != 0;
+    
+    crate::serial_println!("!!! PAGE FAULT !!!");
+    crate::serial_println!("  Address: 0x{:x}", cr2);
+    crate::serial_println!("  Error: 0x{:x}", error_code);
+    crate::serial_println!("  Instruction fetch: {}", is_instruction_fetch);
+    crate::serial_println!("  User mode: {}", is_user_mode);
+    crate::serial_println!("  Write: {}", is_write);
+    crate::serial_println!("  Present: {}", is_present);
+    
+    panic!("Page fault");
 }
 
 #[no_mangle]
@@ -452,10 +489,11 @@ pub fn getchar_blocking() -> u8 {
     }
 }
 
-// Syscall handler (unchanged)
+// Syscall handler - fixed register clobbering
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_wrapper() {
     core::arch::naked_asm!(
+        // Save all registers
         "push rax",
         "push rbx",
         "push rcx",
@@ -471,11 +509,27 @@ pub unsafe extern "C" fn syscall_wrapper() {
         "push r13",
         "push r14",
         "push r15",
-        "mov rdi, rax",
-        "mov rsi, rbx",
-        "mov rdx, rcx",
-        "mov rcx, rdx",
+        
+        // Save syscall args BEFORE we clobber any registers
+        // Linux INT 0x80 convention: rax=syscall, rbx=arg1, rcx=arg2, rdx=arg3, rsi=arg4, rdi=arg5
+        "mov r10, rdx",    // save arg3 (rdx)
+        "mov r11, rsi",    // save arg4 (rsi) 
+        "mov r12, rdi",    // save arg5 (rdi)
+        
+        // Setup System V AMD64 ABI call: rdi, rsi, rdx, rcx, r8, r9
+        "mov rdi, rax",    // param1: syscall number
+        "mov rsi, rbx",    // param2: arg1
+        "mov rdx, rcx",    // param3: arg2
+        "mov rcx, r10",    // param4: arg3 (from saved rdx)
+        "mov r8, r11",     // param5: arg4 (from saved rsi)
+        "mov r9, r12",     // param6: arg5 (from saved rdi)
+        
         "call syscall_handler",
+        
+        // Store return value to stack slot for RAX (14 regs * 8 bytes from top)
+        "mov [rsp + 14*8], rax",
+        
+        // Restore all registers
         "pop r15",
         "pop r14",
         "pop r13",
@@ -490,7 +544,8 @@ pub unsafe extern "C" fn syscall_wrapper() {
         "pop rdx",
         "pop rcx",
         "pop rbx",
-        "add rsp, 8",
+        "pop rax",
+        
         "iretq",
     );
 }
@@ -509,6 +564,8 @@ extern "C" fn syscall_handler(
     arg4: u64,
     arg5: u64,
 ) -> u64 {
+    crate::serial_println!("[SYSCALL] num={} arg1={} arg2={} arg3={}", syscall, arg1, arg2, arg3);
+    
     // Record syscall for behavior tracking
     if let Some(pid) = crate::process::get_current_pid() {
         crate::security::record_syscall(pid, syscall);

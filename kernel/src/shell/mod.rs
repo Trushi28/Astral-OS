@@ -94,6 +94,9 @@ impl Shell {
         let reality_id = RealityId::current().as_u64();
         let state = get_system_state();
         
+        // User mode shell prompt: user@astral
+        print_colored("user", 0x00FF88);  // Username in green
+        print_colored("@", 0x888888);     // @ in gray
         print_colored("astral", self.theme.prompt_color);
         
         match state {

@@ -114,6 +114,34 @@ impl VirtioBlockDevice {
         
         let hhdm_offset = get_hhdm_offset();
         
+        // Map MMIO regions BEFORE accessing them
+        // This is required for UEFI where HHDM only covers RAM, not MMIO
+        unsafe {
+            let mut pt = crate::memory::PageTableManager::current();
+            
+            // Map each BAR region if present
+            if caps.common_bar_addr != 0 {
+                if let Err(e) = pt.map_mmio(caps.common_bar_addr, PAGE_SIZE) {
+                    crate::serial_println!("[VIRTIO] Warning: Failed to map common BAR: {}", e);
+                }
+            }
+            if caps.notify_bar_addr != 0 {
+                if let Err(e) = pt.map_mmio(caps.notify_bar_addr, PAGE_SIZE) {
+                    crate::serial_println!("[VIRTIO] Warning: Failed to map notify BAR: {}", e);
+                }
+            }
+            if caps.device_bar_addr != 0 {
+                if let Err(e) = pt.map_mmio(caps.device_bar_addr, PAGE_SIZE) {
+                    crate::serial_println!("[VIRTIO] Warning: Failed to map device BAR: {}", e);
+                }
+            }
+            if caps.isr_bar_addr != 0 {
+                if let Err(e) = pt.map_mmio(caps.isr_bar_addr, PAGE_SIZE) {
+                    crate::serial_println!("[VIRTIO] Warning: Failed to map ISR BAR: {}", e);
+                }
+            }
+        }
+        
         let common_cfg = (caps.common_bar_addr + hhdm_offset as u64) as usize;
         let notify_base = (caps.notify_bar_addr + hhdm_offset as u64) as usize;
         let device_cfg = (caps.device_bar_addr + hhdm_offset as u64) as usize;

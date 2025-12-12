@@ -110,7 +110,40 @@ fn sys_read(fd: i32, buf: *mut u8, count: usize) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
     
-    // For now, stub implementation
+    // stdin (fd=0) - read from keyboard
+    if fd == 0 {
+        // Try to read from keyboard buffer
+        let mut bytes_read = 0;
+        
+        unsafe {
+            while bytes_read < count {
+                if let Some(key) = crate::interrupts::getchar() {
+                    // Skip non-printable keys (special keys)
+                    if key < 0x80 && key >= 0x20 || key == b'\n' || key == 8 {
+                        *buf.add(bytes_read) = key;
+                        bytes_read += 1;
+                        
+                        // For interactive input, return after newline  
+                        if key == b'\n' {
+                            break;
+                        }
+                    }
+                } else {
+                    // No more characters available
+                    break;
+                }
+            }
+        }
+        
+        if bytes_read > 0 {
+            return Ok(bytes_read as u64);
+        }
+        
+        // No input available, return 0 (non-blocking)
+        return Ok(0);
+    }
+    
+    // Other file descriptors not implemented
     Err(SyscallError::NotImplemented)
 }
 

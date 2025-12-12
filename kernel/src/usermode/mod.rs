@@ -4,6 +4,7 @@
 pub mod loader;
 pub mod syscall;
 pub mod elf;
+pub mod test;
 
 use crate::process::{Process, Pid, ProcessState, Registers};
 use crate::memory::{PageTableManager, VirtAddr, PhysAddr, PageTableEntry};
@@ -66,24 +67,44 @@ fn map_kernel_space(pt: &mut PageTableManager) -> Result<(), &'static str> {
     // Get current kernel page table
     let kernel_pt = unsafe { PageTableManager::current() };
     
-    // Copy kernel mappings (higher half: 0xFFFF800000000000+)
+    // Get HHDM offset for virtual address translation
+    let hhdm = crate::get_hhdm_offset();
+    
+    // Copy kernel mappings (higher half: P4 entries 256-511)
     // This is needed so kernel code is accessible during syscalls
-    // Implementation would copy P4 entries 256-511
+    unsafe {
+        let kernel_p4_phys = kernel_pt.p4_physical().as_u64();
+        let kernel_p4 = (kernel_p4_phys as usize + hhdm) as *const u64;
+        
+        let user_p4_phys = pt.p4_physical().as_u64();
+        let user_p4 = (user_p4_phys as usize + hhdm) as *mut u64;
+        
+        // Copy entries 256-511 (higher half - kernel space)
+        for i in 256..512 {
+            let kernel_entry = *kernel_p4.add(i);
+            *user_p4.add(i) = kernel_entry;
+        }
+    }
     
-    // For now, we'll use a simplified approach:
-    // The kernel will handle mapping on syscall entry
-    
-    Ok(())
-}
+    Ok(()
+)}
 
 /// Allocate user stack
 fn allocate_user_stack(pt: &mut PageTableManager) -> Result<u64, &'static str> {
-    let num_pages = USER_STACK_SIZE / crate::PAGE_SIZE;
+    // Stack grows DOWN, so we need to map pages from (TOP - SIZE) to TOP inclusive
+    // The +1 ensures the page containing USER_STACK_TOP is mapped
+    let num_pages = (USER_STACK_SIZE / crate::PAGE_SIZE) + 1;
     let stack_start = USER_STACK_TOP - (USER_STACK_SIZE as u64);
     
     for i in 0..num_pages {
         let virt_addr = VirtAddr::new(stack_start + (i * crate::PAGE_SIZE) as u64);
         let frame = allocate_frame().ok_or("Out of memory")?;
+        
+        // Zero the frame before mapping
+        unsafe {
+            let ptr = frame.to_virt() as *mut u8;
+            core::ptr::write_bytes(ptr, 0, crate::PAGE_SIZE);
+        }
         
         pt.map(
             virt_addr,
@@ -133,4 +154,42 @@ pub fn enter_usermode(pid: Pid) {
             );
         }
     }
+}
+
+/// Direct enter usermode with explicit parameters (for testing)
+pub unsafe fn direct_enter_usermode(
+    page_table_phys: u64,
+    kernel_stack: u64,
+    rip: u64,
+    rsp: u64,
+    cs: u64,
+    ss: u64,
+    rflags: u64,
+) -> ! {
+    // Set TSS RSP0 BEFORE switching page tables
+    // This ensures interrupts in ring 3 return to correct kernel stack
+    crate::interrupts::idt::set_tss_rsp0(kernel_stack);
+    
+    // Load process page table
+    core::arch::asm!("mov cr3, {}", in(reg) page_table_phys);
+    
+    crate::serial_println!("[USERMODE] Jumping to ring 3: RIP=0x{:x} RSP=0x{:x} CS=0x{:x} SS=0x{:x}", 
+        rip, rsp, cs, ss);
+    
+    // Jump to usermode via IRETQ
+    // Stack layout for IRETQ: [RIP, CS, RFLAGS, RSP, SS] (pushed in reverse)
+    core::arch::asm!(
+        "push {ss}",      // SS
+        "push {rsp}",     // RSP
+        "push {rflags}",  // RFLAGS (IF will enable interrupts)
+        "push {cs}",      // CS
+        "push {rip}",     // RIP
+        "iretq",
+        ss = in(reg) ss,
+        rsp = in(reg) rsp,
+        rflags = in(reg) rflags,
+        cs = in(reg) cs,
+        rip = in(reg) rip,
+        options(noreturn)
+    );
 }

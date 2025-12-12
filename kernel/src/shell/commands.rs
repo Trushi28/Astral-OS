@@ -37,6 +37,7 @@ pub fn execute(command: &str, mut args: core::str::SplitWhitespace, theme: &mut 
         "security" => cmd_security(args, theme),
         "graphics" => cmd_graphics(theme),
         "net" => cmd_net(args, theme),
+        "usertest" => cmd_usertest(theme),
         _ => {
             print_colored("Unknown command: ", theme.error_color);
             crate::println!("{}", command);
@@ -585,6 +586,19 @@ fn cmd_net(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
         }
         _ => {
             crate::println!("Usage: net <status|ifconfig|ping>");
+        }
+    }
+}
+
+fn cmd_usertest(theme: &ShellTheme) {
+    print_colored("Running usermode test...\n", theme.info_color);
+    
+    match crate::usermode::test::run_test_program() {
+        Ok(()) => {
+            print_colored("Usermode test completed!\n", theme.success_color);
+        }
+        Err(e) => {
+            print_colored(&alloc::format!("Usermode test failed: {}\n", e), theme.error_color);
         }
     }
 }

@@ -192,3 +192,22 @@ pub fn get_gdt_ptr() -> u64 {
         &raw const KERNEL_GDT as *const _ as u64
     }
 }
+
+/// Set TSS RSP0 (kernel stack for ring 0 entry)
+/// This MUST be called before entering usermode so that interrupts
+/// can use the correct kernel stack
+pub fn set_tss_rsp0(kernel_stack: u64) {
+    unsafe {
+        TSS.rsp0 = kernel_stack;
+    }
+}
+
+/// Get current TSS RSP0
+pub fn get_tss_rsp0() -> u64 {
+    unsafe { TSS.rsp0 }
+}
+
+/// Get IDT address for debugging
+pub fn get_idt_addr() -> u64 {
+    unsafe { &raw const IDT as *const _ as u64 }
+}

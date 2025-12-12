@@ -231,6 +231,37 @@ impl PageTableManager {
         Ok(())
     }
     
+    /// Map an MMIO physical address range into the current page table
+    /// This maps physical address to virtual address using HHDM convention
+    /// MMIO pages are marked as uncached and no-execute
+    pub fn map_mmio(&mut self, phys_addr: u64, size: usize) -> Result<(), &'static str> {
+        let hhdm = crate::get_hhdm_offset() as u64;
+        let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+        
+        // MMIO mapping: phys -> hhdm + phys (so HHDM access works)
+        for i in 0..num_pages {
+            let page_phys = (phys_addr & !0xFFF) + (i * PAGE_SIZE) as u64;
+            let page_virt = VirtAddr::new(page_phys + hhdm);
+            let phys = PhysAddr::new(page_phys);
+            
+            // Check if already mapped
+            if self.translate(page_virt).is_some() {
+                continue; // Already mapped, skip
+            }
+            
+            // Map with MMIO-appropriate flags: present, writable, no cache, no execute
+            let flags = PageTableEntry::PRESENT 
+                | PageTableEntry::WRITABLE 
+                | PageTableEntry::NO_CACHE 
+                | PageTableEntry::WRITE_THROUGH
+                | PageTableEntry::NO_EXECUTE;
+            
+            self.map(page_virt, phys, flags)?;
+        }
+        
+        Ok(())
+    }
+    
     /// Unmap virtual page
     pub fn unmap(&mut self, virt: VirtAddr) -> Result<PhysAddr, &'static str> {
         let p4_index = virt.p4_index();

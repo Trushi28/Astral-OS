@@ -2,7 +2,7 @@
 //! ELF binary loader for user processes
 
 use super::elf::{Elf64Header, PT_LOAD};
-use crate::memory::{PageTableManager, VirtAddr, PageTableEntry};
+use crate::memory::{PageTableManager, VirtAddr, PhysAddr, PageTableEntry};
 use crate::memory::frame::allocate_frame;
 use crate::util::align_up;
 
@@ -102,33 +102,54 @@ pub fn load_flat_binary(
     let code_size = code.len();
     let num_pages = (code_size + crate::PAGE_SIZE - 1) / crate::PAGE_SIZE;
     
-    // Map pages for code
+    crate::serial_println!("[LOADER] Loading {} bytes ({} pages) at 0x{:x}", 
+        code_size, num_pages, load_addr);
+    
+    // We need to track the frames so we can write to them
+    let mut frames: alloc::vec::Vec<PhysAddr> = alloc::vec::Vec::new();
+    
+    // Allocate and map pages for code
     for i in 0..num_pages {
         let page_virt = VirtAddr::new(load_addr + (i * crate::PAGE_SIZE) as u64);
         let frame = allocate_frame().ok_or("Out of memory")?;
+        frames.push(frame);
         
-        // Zero page
-        unsafe {
-            let page_ptr = frame.to_virt() as *mut u8;
-            core::ptr::write_bytes(page_ptr, 0, crate::PAGE_SIZE);
-        }
-        
+        // Map as USER + PRESENT (executable by default on x86-64)
         page_table.map(
             page_virt,
             frame,
-            PageTableEntry::PRESENT | PageTableEntry::USER | PageTableEntry::WRITABLE
+            PageTableEntry::PRESENT | PageTableEntry::USER
         )?;
+        
+        crate::serial_println!("[LOADER] Mapped page {} at virt 0x{:x} -> phys 0x{:x}", 
+            i, page_virt.as_u64(), frame.as_u64());
     }
     
-    // Copy code
+    // Copy code directly to the frames using HHDM
+    let hhdm = crate::get_hhdm_offset();
     for (offset, &byte) in code.iter().enumerate() {
-        let virt = VirtAddr::new(load_addr + offset as u64);
+        let page_index = offset / crate::PAGE_SIZE;
+        let page_offset = offset % crate::PAGE_SIZE;
         
-        if let Some(phys) = page_table.translate(virt) {
-            unsafe {
-                let ptr = phys.to_virt() as *mut u8;
-                *ptr = byte;
-            }
+        let frame = frames[page_index];
+        let write_addr = (frame.as_u64() as usize + hhdm + page_offset) as *mut u8;
+        
+        unsafe {
+            core::ptr::write_volatile(write_addr, byte);
+        }
+    }
+    
+    crate::serial_println!("[LOADER] Code copied successfully");
+    
+    // Verify first few bytes were written correctly
+    if code_size >= 2 {
+        let frame = frames[0];
+        unsafe {
+            let ptr = (frame.as_u64() as usize + hhdm) as *const u8;
+            let b0 = core::ptr::read_volatile(ptr);
+            let b1 = core::ptr::read_volatile(ptr.add(1));
+            crate::serial_println!("[LOADER] First bytes at 0x{:x}: 0x{:02x} 0x{:02x} (expected 0x{:02x} 0x{:02x})", 
+                load_addr, b0, b1, code[0], code[1]);
         }
     }
     
