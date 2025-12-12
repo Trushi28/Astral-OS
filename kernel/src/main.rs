@@ -62,13 +62,49 @@ pub extern "C" fn _start() -> ! {
         loop { unsafe { core::arch::asm!("cli", "hlt"); } }
     }
     
+    // IMPORTANT: Initialize memory FIRST - ACPI parsing uses heap allocation!
     serial_println(b"[1/10] Initializing memory management...");
-    println!("[1/10] Memory management...");
-    
     memory::init();
-    serial_println(b"[DEBUG] Testing Heap before Font load...");
+    serial_println(b"[BOOT] Memory initialized");
+    
+    // Initialize serial driver for serial_println! macro support
+    drivers::serial::init();
+    serial_println(b"[BOOT] High-level serial driver initialized");
+    
+    // Now we can use heap allocations
+    serial_println(b"[BOOT] Initializing ACPI...");
+    
+    // BSP APIC initialization
+    serial_println(b"[BOOT] Initializing BSP APIC...");
+    unsafe {
+        // Get BSP APIC ID
+        let apic_id = if let Some(madt) = crate::acpi::madt::parse_madt() {
+            serial_println(b"[BOOT]   MADT parsed successfully");
+            madt.local_apics.get(0).copied().unwrap_or(0)
+        } else {
+            serial_println(b"[BOOT]   No MADT found, using APIC ID 0");
+            0
+        };
+        
+        // Initialize BSP CPU structures
+        crate::arch::cpu::init_bsp(apic_id);
+        serial_println(b"[BOOT]   BSP CPU initialized");
+        
+        // Initialize BSP APIC
+        serial_println(b"[BOOT]   About to call init_apic...");
+        let apic_result = crate::arch::apic::init_apic();
+        serial_println(b"[BOOT]   init_apic returned");
+        if let Err(e) = apic_result {
+            serial_println(b"[BOOT] APIC init failed: ");
+            serial_println(e.as_bytes());
+        } else {
+            serial_println(b"[BOOT]   APIC initialized");
+        }
+    }
+    
+    serial_println(b"[DEBUG] Testing Heap...");
     // Try to allocate a Box. If memory::init() failed, this will panic HERE.
-    let b = alloc::boxed::Box::new(42);
+    let _b = alloc::boxed::Box::new(42);
     serial_println(b"[DEBUG] Small allocation OK");
     
     // Try a larger allocation (Vector) which fontdue uses
@@ -77,6 +113,34 @@ pub extern "C" fn _start() -> ! {
     v.push(2);
     serial_println(b"[DEBUG] Vector allocation OK");
     serial_println(b"");
+    serial_println(b"");
+    
+    // Initialize SMP (multicore)
+    serial_println(b"[BOOT] Initializing SMP...");
+    let smp_ok = crate::arch::smp::init_smp().is_ok();
+    
+    if smp_ok {
+        serial_println(b"[BOOT] SMP initialized");
+    } else {
+        serial_println(b"[BOOT] SMP init failed - single-core mode");
+        // IOAPIC wasn't initialized by SMP, do it manually
+        unsafe {
+            if let Some(madt) = crate::acpi::madt::parse_madt() {
+                if madt.ioapic_addr != 0 {
+                    crate::arch::ioapic::init_ioapic(madt.ioapic_addr, madt.ioapic_gsi_base);
+                }
+            }
+        }
+    }
+    
+    // Setup IOAPIC routing for keyboard (IRQ 1 -> Vector 33)
+    serial_println(b"[BOOT] Configuring keyboard IRQ...");
+    crate::arch::ioapic::ioapic_set_irq(1, 33, 0, false, false);
+    crate::arch::ioapic::ioapic_unmask_irq(1);
+    
+    // Disable legacy PIC now that APIC is working
+    serial_println(b"[BOOT] Disabling legacy PIC...");
+    disable_legacy_pic();
     serial_println(b"[2/10] Initializing framebuffer...");
     
     // Now it's safe to access framebuffer properties
@@ -188,6 +252,29 @@ pub extern "C" fn _start() -> ! {
     drivers::framebuffer::print_colored("+===========================================+\n", 0x00AA00);
     println!();
     
+    serial_println(b"");
+    serial_println(b"[10/10] Initializing graphics server...");
+    println!("[10/10] Graphics server...");
+
+    // Initialize graphics server
+    if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
+        if let Some(framebuffer) = fb_resp.framebuffers().next() {
+            crate::graphics::init(
+                framebuffer.addr(),
+                framebuffer.width() as usize,
+                framebuffer.height() as usize,
+                framebuffer.pitch() as usize
+            );
+        }
+    }
+
+    // Create security context for kernel
+    crate::security::create_trusted_context(crate::process::Pid::new());
+    serial_println(b"");
+    serial_println(b"[11/11] Initializing network stack...");
+    println!("[11/11] Network stack...");
+
+    crate::network::init();
     serial_println(b"[7/10] Starting interactive shell...");
     
     // Start shell
@@ -369,5 +456,12 @@ fn enable_sse() {
         cr4 |= (1 << 9);  
         cr4 |= (1 << 10); 
         asm!("mov cr4, {}", in(reg) cr4);
+    }
+}
+fn disable_legacy_pic() {
+    unsafe {
+        // Mask all interrupts on both PICs
+        crate::util::outb(0x21, 0xFF);
+        crate::util::outb(0xA1, 0xFF);
     }
 }

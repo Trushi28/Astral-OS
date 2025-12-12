@@ -1,4 +1,5 @@
 //src/drivers/virtio/block.rs
+use crate::sync::IrqSpinlock;
 use super::pci::PciLocation;
 use super::queue::Virtqueue;
 use crate::memory::frame::{allocate_frame, deallocate_frame, PhysAddr};
@@ -95,6 +96,7 @@ pub struct VirtioBlockDevice {
     queue_notify_off: u16,
     capacity: u64,
     initialized: AtomicBool,
+    device_lock: IrqSpinlock<()>,
 }
 
 unsafe impl Send for VirtioBlockDevice {}
@@ -102,7 +104,6 @@ unsafe impl Sync for VirtioBlockDevice {}
 
 impl VirtioBlockDevice {
     pub fn new(pci_loc: PciLocation) -> Result<Self, &'static str> {
-        // Enable bus mastering and memory space
         pci_loc.enable_bus_mastering();
         
         let caps = Self::parse_capabilities(&pci_loc)?;
@@ -129,9 +130,9 @@ impl VirtioBlockDevice {
             queue_notify_off: 0,
             capacity: 0,
             initialized: AtomicBool::new(false),
+            device_lock: IrqSpinlock::new(()),
         };
         
-        // Device initialization sequence
         device.reset()?;
         device.negotiate_features()?;
         device.setup_queue()?;
@@ -157,7 +158,7 @@ impl VirtioBlockDevice {
             
             let cap_id = loc.read8(cap_ptr);
             
-            if cap_id == 0x09 { // Vendor-specific capability
+            if cap_id == 0x09 {
                 let cfg_type = loc.read8(cap_ptr + 3);
                 let bar = loc.read8(cap_ptr + 4);
                 let offset = loc.read32(cap_ptr + 8);
@@ -203,10 +204,8 @@ impl VirtioBlockDevice {
     }
     
     fn reset(&mut self) -> Result<(), &'static str> {
-        // Reset device
         self.write_device_status(0);
         
-        // Wait for reset to complete
         for _ in 0..10000 {
             if self.read_device_status() == 0 {
                 break;
@@ -214,10 +213,8 @@ impl VirtioBlockDevice {
             unsafe { core::arch::asm!("pause", options(nomem, nostack)); }
         }
         
-        // Acknowledge device
         self.write_device_status(VIRTIO_STATUS_ACKNOWLEDGE);
         
-        // Set driver bit
         let status = self.read_device_status();
         self.write_device_status(status | VIRTIO_STATUS_DRIVER);
         
@@ -225,28 +222,23 @@ impl VirtioBlockDevice {
     }
     
     fn negotiate_features(&mut self) -> Result<(), &'static str> {
-        // Read device features
         self.write_common_u32(CommonCfgOffset::DeviceFeatureSelect, 0);
         let _features_low = self.read_common_u32(CommonCfgOffset::DeviceFeature);
         
         self.write_common_u32(CommonCfgOffset::DeviceFeatureSelect, 1);
-        let features_high = self.read_common_u32(CommonCfgOffset::DeviceFeature);
+        let _features_high = self.read_common_u32(CommonCfgOffset::DeviceFeature);
         
-        // We only need VERSION_1
         let driver_features = VIRTIO_F_VERSION_1;
         
-        // Write driver features
         self.write_common_u32(CommonCfgOffset::DriverFeatureSelect, 0);
         self.write_common_u32(CommonCfgOffset::DriverFeature, driver_features as u32);
         
         self.write_common_u32(CommonCfgOffset::DriverFeatureSelect, 1);
         self.write_common_u32(CommonCfgOffset::DriverFeature, (driver_features >> 32) as u32);
         
-        // Set FEATURES_OK
         let status = self.read_device_status();
         self.write_device_status(status | VIRTIO_STATUS_FEATURES_OK);
         
-        // Verify FEATURES_OK
         for _ in 0..1000 {
             if self.read_device_status() & VIRTIO_STATUS_FEATURES_OK != 0 {
                 return Ok(());
@@ -258,7 +250,6 @@ impl VirtioBlockDevice {
     }
     
     fn setup_queue(&mut self) -> Result<(), &'static str> {
-        // Select queue 0
         self.write_common_u16(CommonCfgOffset::QueueSelect, 0);
         
         let max_queue_size = self.read_common_u16(CommonCfgOffset::QueueSize);
@@ -267,7 +258,6 @@ impl VirtioBlockDevice {
             return Err("Queue not available");
         }
         
-        // Use power of 2 queue size that fits in one page
         let mut queue_size = max_queue_size.min(128);
         
         loop {
@@ -286,35 +276,28 @@ impl VirtioBlockDevice {
             queue_size /= 2;
         }
         
-        // Allocate queue memory
         let frame = allocate_frame().ok_or("Out of memory")?;
         let queue_phys = frame.as_u64();
         let hhdm = get_hhdm_offset();
         let queue_virt = queue_phys as usize + hhdm;
         
-        // Zero the queue memory
         unsafe {
             core::ptr::write_bytes(queue_virt as *mut u8, 0, PAGE_SIZE);
         }
         
-        // Initialize virtqueue
         self.queue = unsafe { Virtqueue::new(queue_virt, queue_phys, queue_size)? };
         
         let (desc_phys, avail_phys, used_phys) = self.queue.get_addresses();
         
-        // Configure queue
         self.write_common_u16(CommonCfgOffset::QueueSize, queue_size);
         self.write_common_u64(CommonCfgOffset::QueueDesc, desc_phys);
         self.write_common_u64(CommonCfgOffset::QueueAvail, avail_phys);
         self.write_common_u64(CommonCfgOffset::QueueUsed, used_phys);
         
-        // Get notify offset
         self.queue_notify_off = self.read_common_u16(CommonCfgOffset::QueueNotifyOff);
         
-        // Enable queue
         self.write_common_u16(CommonCfgOffset::QueueEnable, 1);
         
-        // Verify queue is enabled
         let enabled = self.read_common_u16(CommonCfgOffset::QueueEnable);
         if enabled != 1 {
             return Err("Failed to enable queue");
@@ -327,7 +310,6 @@ impl VirtioBlockDevice {
         unsafe {
             let config = self.device_cfg as *const VirtioBlkConfig;
             
-            // Read capacity with proper memory ordering
             fence(Ordering::Acquire);
             self.capacity = read_volatile(&(*config).capacity);
             fence(Ordering::Release);
@@ -343,7 +325,6 @@ impl VirtioBlockDevice {
         let status = self.read_device_status();
         self.write_device_status(status | VIRTIO_STATUS_DRIVER_OK);
         
-        // Verify device is ready
         for _ in 0..1000 {
             let current_status = self.read_device_status();
             if current_status & VIRTIO_STATUS_FAILED != 0 {
@@ -358,7 +339,6 @@ impl VirtioBlockDevice {
         Err("Device did not become ready")
     }
     
-    // MMIO accessors with proper memory barriers
     #[inline]
     fn read_common_u8(&self, offset: CommonCfgOffset) -> u8 {
         unsafe {
@@ -448,28 +428,34 @@ impl VirtioBlockDevice {
     }
     
     pub fn read_sector(&mut self, sector: u64, buffer: &mut [u8; 512]) -> Result<(), &'static str> {
-        if !self.initialized.load(Ordering::Acquire) {
-            return Err("Device not initialized");
+        // Check initialization under lock, then drop lock before do_io
+        {
+            let _lock = self.device_lock.lock();
+            if !self.initialized.load(Ordering::Acquire) {
+                return Err("Device not initialized");
+            }
         }
-        
+        // Lock is dropped here, now we can borrow self mutably
         self.do_io(sector, buffer, true)
     }
-    
+
     pub fn write_sector(&mut self, sector: u64, buffer: &[u8; 512]) -> Result<(), &'static str> {
-        if !self.initialized.load(Ordering::Acquire) {
-            return Err("Device not initialized");
+        // Check initialization under lock, then drop lock before do_io
+        {
+            let _lock = self.device_lock.lock();
+            if !self.initialized.load(Ordering::Acquire) {
+                return Err("Device not initialized");
+            }
         }
-        
+        // Lock is dropped here, now we can borrow self mutably
         let mut temp = [0u8; 512];
         temp.copy_from_slice(buffer);
         self.do_io(sector, &mut temp, false)
     }
     
     fn do_io(&mut self, sector: u64, buffer: &mut [u8; 512], is_read: bool) -> Result<(), &'static str> {
-        // Allocate descriptor
         let head_desc = self.queue.alloc_desc().ok_or("No free descriptors")?;
         
-        // Allocate frames
         let header_frame = allocate_frame().ok_or("Out of memory")?;
         let data_frame = allocate_frame().ok_or("Out of memory")?;
         let status_frame = allocate_frame().ok_or("Out of memory")?;
@@ -486,7 +472,6 @@ impl VirtioBlockDevice {
         let status_virt = (status_phys as usize + hhdm) as *mut u8;
         
         unsafe {
-            // Write header
             let req = if is_read {
                 VirtioBlkReq::new_read(sector)
             } else {
@@ -495,7 +480,6 @@ impl VirtioBlockDevice {
             write_volatile(header_virt, req);
             fence(Ordering::Release);
             
-            // Initialize data buffer
             if is_read {
                 core::ptr::write_bytes(data_virt, 0, 512);
             } else {
@@ -503,12 +487,10 @@ impl VirtioBlockDevice {
             }
             fence(Ordering::Release);
             
-            // Initialize status
             write_volatile(status_virt, 0xFF);
             fence(Ordering::Release);
         }
         
-        // Setup buffer descriptors
         let buffers = [
             (header_phys, 16u32, false),
             (data_phys, 512u32, is_read),
@@ -523,10 +505,8 @@ impl VirtioBlockDevice {
             return Err(e);
         }
         
-        // Notify device
         self.notify_queue();
         
-        // Wait for completion with timeout
         let start_time = get_timestamp();
         let timeout_ms = 5000;
         
@@ -535,17 +515,14 @@ impl VirtioBlockDevice {
             
             if let Some((completed_id, _len)) = self.queue.get_used() {
                 if completed_id == head_desc {
-                    // Check status
                     let status = unsafe { read_volatile(status_virt) };
                     
-                    // Copy data if read
                     if is_read && status == VIRTIO_BLK_S_OK {
                         unsafe {
                             core::ptr::copy_nonoverlapping(data_virt, buffer.as_mut_ptr(), 512);
                         }
                     }
                     
-                    // Cleanup
                     deallocate_frame(header_frame);
                     deallocate_frame(data_frame);
                     deallocate_frame(status_frame);

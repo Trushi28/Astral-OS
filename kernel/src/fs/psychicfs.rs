@@ -419,7 +419,6 @@ fn allocate_block() -> Option<u32> {
             if pfs.block_bitmap[byte_idx] & (1 << bit_idx) == 0 {
                 // Mark as allocated
                 pfs.block_bitmap[byte_idx] |= 1 << bit_idx;
-                pfs.mark_dirty();
                 
                 let block_num = DATA_BLOCKS_START as u32 + i as u32;
                 
@@ -428,9 +427,19 @@ fn allocate_block() -> Option<u32> {
                     pfs.superblock.free_blocks -= 1;
                 }
                 
-                crate::serial_println!("[FS] Allocated block {} (byte={}, bit={})", 
-                    block_num, byte_idx, bit_idx);
+                // CRITICAL FIX: Immediate sync to disk
+                pfs.mark_dirty();
+                let sync_result = pfs.sync();
                 
+                if !sync_result {
+                    // Rollback on sync failure
+                    pfs.block_bitmap[byte_idx] &= !(1 << bit_idx);
+                    pfs.superblock.free_blocks += 1;
+                    crate::serial_println!("[FS] CRITICAL: Failed to sync block allocation!");
+                    return None;
+                }
+                
+                crate::serial_println!("[FS] Allocated block {} (synced)", block_num);
                 return Some(block_num);
             }
         }
@@ -460,12 +469,20 @@ fn free_block(block_num: u32) {
         let bit_idx = idx % 8;
         
         if byte_idx < 1024 {
+            // Check if block was actually allocated
+            if pfs.block_bitmap[byte_idx] & (1 << bit_idx) == 0 {
+                crate::serial_println!("[FS] WARNING: Freeing already free block {}", block_num);
+                return;
+            }
+            
             pfs.block_bitmap[byte_idx] &= !(1 << bit_idx);
+            pfs.superblock.free_blocks += 1;
             pfs.mark_dirty();
             
-            pfs.superblock.free_blocks += 1;
+            // Sync after every free (safety over performance)
+            pfs.sync();
             
-            crate::serial_println!("[FS] Freed block {}", block_num);
+            crate::serial_println!("[FS] Freed block {} (synced)", block_num);
         }
     }
 }

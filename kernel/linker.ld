@@ -28,7 +28,10 @@ SECTIONS
     .rodata ALIGN(4K) : {
         *(.rodata .rodata.*)
     }
-
+     
+    .ap_trampoline ALIGN(4K) : {
+        *(.ap_trampoline)
+    }
     /* Initialized data */
     .data ALIGN(4K) : {
         *(.data .data.*)

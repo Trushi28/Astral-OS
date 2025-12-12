@@ -17,6 +17,13 @@ pub mod reality;
 pub mod shell;
 pub mod util;
 pub mod power;
+pub mod arch;
+pub mod acpi;
+pub mod sync;
+pub mod usermode;
+pub mod graphics;
+pub mod security;
+pub mod network;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -32,6 +39,8 @@ pub const KERNEL_HEAP_SIZE: usize = 100 * 1024 * 1024; // 100MB
 pub const KERNEL_VIRT_BASE: u64 = 0xFFFFFFFF80000000;
 pub const USER_VIRT_BASE: u64 = 0x400000;
 
+pub use arch::cpu::{CpuId, get_cpu_id, get_cpu_count};
+pub use arch::apic::{local_apic_eoi, send_ipi};
 // ============================================================================
 // GLOBAL STATE
 // ============================================================================
@@ -60,8 +69,8 @@ pub fn increment_timestamp() {
 // ============================================================================
 
 use limine::request::{
-    FramebufferRequest, HhdmRequest, MemoryMapRequest,
-    StackSizeRequest, RequestsEndMarker, RequestsStartMarker
+    FramebufferRequest, HhdmRequest, MemoryMapRequest, RsdpRequest,
+    StackSizeRequest, RequestsEndMarker, RequestsStartMarker, SmpRequest
 };
 
 // Start marker - MUST be first
@@ -83,6 +92,16 @@ pub static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 #[used]
 #[link_section = ".requests"]
 pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+
+// RSDP request (ACPI)
+#[used]
+#[link_section = ".requests"]
+pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
+
+// SMP request - Limine handles AP startup
+#[used]
+#[link_section = ".requests"]
+pub static SMP_REQUEST: SmpRequest = SmpRequest::new();
 
 // Stack size request
 #[used]

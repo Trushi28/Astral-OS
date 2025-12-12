@@ -187,3 +187,8 @@ pub fn init_gdt_and_tss() {
         asm!("ltr ax", in("ax") 0x28u16, options(nostack, nomem));
     }
 }
+pub fn get_gdt_ptr() -> u64 {
+    unsafe {
+        &raw const KERNEL_GDT as *const _ as u64
+    }
+}

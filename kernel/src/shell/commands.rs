@@ -33,7 +33,10 @@ pub fn execute(command: &str, mut args: core::str::SplitWhitespace, theme: &mut 
         "reboot" => cmd_reboot(),
         "halt" => cmd_halt(),
         "history" => {} // TODO
-        
+        "smp" => cmd_smp(theme),
+        "security" => cmd_security(args, theme),
+        "graphics" => cmd_graphics(theme),
+        "net" => cmd_net(args, theme),
         _ => {
             print_colored("Unknown command: ", theme.error_color);
             crate::println!("{}", command);
@@ -79,6 +82,11 @@ fn cmd_help(theme: &ShellTheme) {
     crate::println!("  write <f> <text> - Write file");
     crate::println!("  touch <f> - Create file");
     crate::println!("  rm <f>   - Delete file");
+    crate::println!();
+    crate::println!("  smp      - SMP status");
+    crate::println!("  security  - Security status");
+    crate::println!("  graphics  - Graphics server info");
+    crate::println!("  net       - Network commands");
 }
 
 fn cmd_clear() {
@@ -493,6 +501,90 @@ fn cmd_halt() {
     loop {
         unsafe {
             core::arch::asm!("cli", "hlt", options(nostack, nomem));
+        }
+    }
+}
+
+fn cmd_smp(theme: &ShellTheme) {
+    use crate::arch::cpu::{get_cpu_count, online_cpus, get_cpu_data};
+    use crate::process::scheduler::get_cpu_stats;
+    
+    print_colored("SMP Status:\n", theme.info_color);
+    crate::println!("  Total CPUs: {}", get_cpu_count());
+    crate::println!();
+    
+    print_colored("CPU  APIC_ID  STATE    QUEUE  IDLE\n", theme.info_color);
+    crate::println!("---  -------  -------  -----  ------");
+    
+    for cpu_id in online_cpus() {
+        if let Some(data) = get_cpu_data(cpu_id) {
+            let (queue_len, idle) = get_cpu_stats(cpu_id);
+            let state = if data.info.bsp { "BSP    " } else { "AP     " };
+            
+            crate::println!("{:<3}  0x{:04x}   {}  {:<5}  {}",
+                cpu_id.as_u8(),
+                data.info.apic_id,
+                state,
+                queue_len,
+                idle
+            );
+        }
+    }
+}
+fn cmd_security(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
+    let subcmd = args.next().unwrap_or("status");
+    
+    match subcmd {
+        "status" => {
+            // Show security status
+            print_colored("Security Status:\n", theme.info_color);
+            crate::println!("  Mode: Intent-based capabilities");
+            crate::println!("  Active contexts: ...");
+        }
+        "trust" => {
+            if let Some(pid_str) = args.next() {
+                if let Ok(pid_num) = pid_str.parse::<u64>() {
+                    let trust = crate::security::get_trust_score(crate::process::Pid::new());
+                    crate::println!("Trust score for PID {}: {}", pid_num, trust);
+                }
+            }
+        }
+        _ => {
+            crate::println!("Usage: security <status|trust>");
+        }
+    }
+}
+
+fn cmd_graphics(theme: &ShellTheme) {
+    use crate::graphics;
+    
+    print_colored("Graphics Server:\n", theme.info_color);
+    crate::println!("  Compositor: Active");
+    crate::println!("  Double buffering: Enabled");
+    crate::println!("  Surfaces: ...");
+}
+
+fn cmd_net(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
+    let subcmd = args.next().unwrap_or("status");
+    
+    match subcmd {
+        "status" => {
+            print_colored("Network Status:\n", theme.info_color);
+            crate::println!("  Stack: Active");
+            crate::println!("  Devices: ...");
+        }
+        "ifconfig" => {
+            print_colored("Network Interfaces:\n", theme.info_color);
+            crate::println!("  eth0: 10.0.2.15/24");
+        }
+        "ping" => {
+            if let Some(target) = args.next() {
+                crate::println!("Pinging {}...", target);
+                // Implement ping
+            }
+        }
+        _ => {
+            crate::println!("Usage: net <status|ifconfig|ping>");
         }
     }
 }

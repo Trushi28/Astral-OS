@@ -1,7 +1,8 @@
-//src/interrupts/handlers.rs
+// src/interrupts/handlers.rs (SMP-updated version)
+// Key changes: Use APIC EOI instead of PIC EOI, add per-CPU tracking
+
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-use super::pic::pic_send_eoi;
 use crate::process::scheduler::schedule;
 use crate::process::context::switch_to_process;
 
@@ -14,7 +15,7 @@ pub struct InterruptFrame {
     ss: u64,
 }
 
-// Exception wrappers that preserve all registers
+// Exception wrappers remain the same...
 macro_rules! exception_wrapper {
     ($name:ident, $handler:ident) => {
         #[unsafe(naked)]
@@ -59,7 +60,7 @@ macro_rules! exception_with_error_wrapper {
                 "push r9",
                 "push r10",
                 "push r11",
-                "mov rdi, [rsp + 72]", // Error code is at rsp+72 (9*8)
+                "mov rdi, [rsp + 72]",
                 concat!("call ", stringify!($handler)),
                 "pop r11",
                 "pop r10",
@@ -70,14 +71,14 @@ macro_rules! exception_with_error_wrapper {
                 "pop rdx",
                 "pop rcx",
                 "pop rax",
-                "add rsp, 8", // Remove error code
+                "add rsp, 8",
                 "iretq",
             );
         }
     };
 }
 
-// Exception handlers
+// Exception handlers (unchanged)
 exception_wrapper!(divide_error_wrapper, divide_error_handler);
 exception_wrapper!(debug_wrapper, debug_handler);
 exception_wrapper!(nmi_wrapper, nmi_handler);
@@ -202,7 +203,7 @@ extern "C" fn virtualization_exception_handler() {
     panic!("EXCEPTION: Virtualization Exception");
 }
 
-// Timer interrupt (IRQ 0)
+// Timer interrupt (IRQ 0 / Vector 32) - NOW USES APIC EOI
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_interrupt_wrapper() {
     core::arch::naked_asm!(
@@ -233,17 +234,22 @@ pub unsafe extern "C" fn timer_interrupt_wrapper() {
 extern "C" fn timer_interrupt_handler() {
     crate::increment_timestamp();
     
+    // Send APIC EOI instead of PIC EOI
+    crate::arch::apic::local_apic_eoi();
+    
+    // Update per-CPU idle counter
     unsafe {
-        pic_send_eoi(0);
+        let cpu_data = crate::arch::cpu::get_current_cpu_data_mut();
+        cpu_data.idle_ticks += 1;
     }
     
-    // Trigger scheduler
+    // Trigger scheduler (preemption)
     if let Some(next_pid) = schedule() {
         switch_to_process(next_pid);
     }
 }
 
-// Keyboard interrupt (IRQ 1)
+// Keyboard interrupt (IRQ 1 / Vector 33) - NOW USES APIC EOI
 #[unsafe(naked)]
 pub unsafe extern "C" fn keyboard_interrupt_wrapper() {
     core::arch::naked_asm!(
@@ -270,7 +276,7 @@ pub unsafe extern "C" fn keyboard_interrupt_wrapper() {
     );
 }
 
-// Keyboard buffer
+// Keyboard buffer and state (unchanged)
 const KB_BUFFER_SIZE: usize = 256;
 static mut KB_BUFFER: [u8; KB_BUFFER_SIZE] = [0; KB_BUFFER_SIZE];
 static KB_WRITE_POS: AtomicUsize = AtomicUsize::new(0);
@@ -290,7 +296,6 @@ static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 static CTRL_PRESSED: AtomicBool = AtomicBool::new(false);
 static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 
-// US keyboard scancode map
 static SCANCODE_TO_ASCII: [u8; 128] = [
     0, 27, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'0', b'-', b'=', 8,
     b'\t', b'q', b'w', b'e', b'r', b't', b'y', b'u', b'i', b'o', b'p', b'[', b']', b'\n',
@@ -326,19 +331,17 @@ extern "C" fn keyboard_interrupt_handler() {
     unsafe {
         let scancode = crate::util::inb(0x60);
         
-        // Handle extended scancode sequences (0xE0 prefix for arrow keys, etc.)
         let esc_state = ESCAPE_SEQUENCE.load(Ordering::Relaxed);
         
         if scancode == 0xE0 {
             ESCAPE_SEQUENCE.store(1, Ordering::Relaxed);
-            pic_send_eoi(1);
+            crate::arch::apic::local_apic_eoi(); // APIC EOI
             return;
         }
         
         if esc_state == 1 {
             ESCAPE_SEQUENCE.store(0, Ordering::Relaxed);
             
-            // Handle extended keys
             if scancode & 0x80 == 0 {
                 let special_key = match scancode {
                     0x48 => Some(KB_ARROW_UP),
@@ -356,11 +359,10 @@ extern "C" fn keyboard_interrupt_handler() {
                 }
             }
             
-            pic_send_eoi(1);
+            crate::arch::apic::local_apic_eoi(); // APIC EOI
             return;
         }
         
-        // Handle key release
         if scancode & 0x80 != 0 {
             let released = scancode & 0x7F;
             match released {
@@ -370,7 +372,6 @@ extern "C" fn keyboard_interrupt_handler() {
                 _ => {}
             }
         } else {
-            // Handle key press
             match scancode {
                 0x2A | 0x36 => SHIFT_PRESSED.store(true, Ordering::Relaxed),
                 0x1D => CTRL_PRESSED.store(true, Ordering::Relaxed),
@@ -378,7 +379,6 @@ extern "C" fn keyboard_interrupt_handler() {
                 _ => {
                     let ctrl = CTRL_PRESSED.load(Ordering::Relaxed);
                     
-                    // Handle Ctrl+key combinations
                     if ctrl {
                         let ctrl_key = match scancode {
                             0x1E => Some(1),   // Ctrl+A
@@ -414,7 +414,7 @@ extern "C" fn keyboard_interrupt_handler() {
             }
         }
         
-        pic_send_eoi(1);
+        crate::arch::apic::local_apic_eoi(); // APIC EOI
     }
 }
 
@@ -451,7 +451,8 @@ pub fn getchar_blocking() -> u8 {
         unsafe { asm!("hlt"); }
     }
 }
-// Syscall handler
+
+// Syscall handler (unchanged)
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_wrapper() {
     core::arch::naked_asm!(
@@ -502,29 +503,17 @@ const SYS_YIELD: u64 = 9;
 #[no_mangle]
 extern "C" fn syscall_handler(
     syscall: u64,
-    _arg1: u64,
-    _arg2: u64,
-    _arg3: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
 ) -> u64 {
-    match syscall {
-        SYS_EXIT => {
-            crate::process::exit_process(0);
-            0
-        }
-        SYS_WRITE => {
-            // TODO: Implement
-            0
-        }
-        SYS_GETPID => {
-            crate::process::get_current_pid().map(|p| p.as_u64()).unwrap_or(0)
-        }
-        SYS_YIELD => {
-            crate::process::scheduler::yield_cpu();
-            0
-        }
-        _ => {
-            crate::println!("Unknown syscall: {}", syscall);
-            !0u64
-        }
+    // Record syscall for behavior tracking
+    if let Some(pid) = crate::process::get_current_pid() {
+        crate::security::record_syscall(pid, syscall);
     }
+    
+    // Dispatch to usermode syscall handler
+    crate::usermode::syscall::handle_syscall(syscall, arg1, arg2, arg3, arg4, arg5)
 }

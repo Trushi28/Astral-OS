@@ -87,6 +87,7 @@ run: iso
 	qemu-system-x86_64 \
 		-cdrom astral.iso \
 		-m 512M \
+		-smp 4 \
 		-serial stdio \
 		-boot d
 
@@ -99,6 +100,7 @@ run-disk: iso disk-img
 		-drive file=astral-disk.img,format=raw,if=none,id=disk0 \
 		-device virtio-blk-pci,drive=disk0,disable-legacy=on\
 		-m 512M \
+		-smp 4 \
 		-serial stdio \
 		-boot d
 
@@ -117,6 +119,7 @@ run-uefi: iso
 		-drive file=astral-disk.img,format=raw,if=none,id=disk0 \
 		-device virtio-blk-pci,drive=disk0,disable-legacy=on\
 		-m 512M \
+		-smp 4 \
 		-serial stdio \
 		-bios /usr/share/edk2/x64/OVMF.4m.fd
 
