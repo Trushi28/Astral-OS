@@ -557,12 +557,72 @@ fn cmd_security(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
 }
 
 fn cmd_graphics(theme: &ShellTheme) {
-    use crate::graphics;
+    use crate::drivers::framebuffer;
     
-    print_colored("Graphics Server:\n", theme.info_color);
-    crate::println!("  Compositor: Active");
-    crate::println!("  Double buffering: Enabled");
-    crate::println!("  Surfaces: ...");
+    print_colored("Graphics System Demo\n", theme.info_color);
+    
+    let (width, height) = framebuffer::get_dimensions();
+    crate::println!("  Screen: {}x{}", width, height);
+    crate::println!("  Drawing demo rectangles...");
+    
+    // Draw some colorful rectangles to demonstrate graphics
+    let colors = [
+        0xFF0000,  // Red
+        0x00FF00,  // Green
+        0x0000FF,  // Blue
+        0xFFFF00,  // Yellow
+        0xFF00FF,  // Magenta
+        0x00FFFF,  // Cyan
+    ];
+    
+    let rect_w = 80;
+    let rect_h = 60;
+    let spacing = 90;
+    let start_x = 50;
+    let start_y = height.saturating_sub(150);
+    
+    for (i, &color) in colors.iter().enumerate() {
+        let x = start_x + i * spacing;
+        framebuffer::fill_rect(x, start_y, rect_w, rect_h, color);
+    }
+    
+    // Draw a larger gradient demo box
+    let gradient_x = width / 2 - 150;
+    let gradient_y = start_y - 100;
+    let gradient_w = 300;
+    let gradient_h = 80;
+    
+    for dy in 0..gradient_h {
+        for dx in 0..gradient_w {
+            let r = ((dx * 255) / gradient_w) as u32;
+            let g = ((dy * 255) / gradient_h) as u32;
+            let b = 128u32;
+            let color = (r << 16) | (g << 8) | b;
+            
+            let x = gradient_x + dx;
+            let y = gradient_y + dy;
+            
+            if x < width && y < height {
+                // Direct pixel write via blit_buffer would be too slow
+                // Use a buffer approach instead
+            }
+        }
+    }
+    
+    // Use blit for gradient
+    let mut gradient_buf = alloc::vec![0u32; gradient_w * gradient_h];
+    for dy in 0..gradient_h {
+        for dx in 0..gradient_w {
+            let r = ((dx * 255) / gradient_w) as u32;
+            let g = ((dy * 255) / gradient_h) as u32;
+            let b = 180u32;
+            gradient_buf[dy * gradient_w + dx] = (r << 16) | (g << 8) | b;
+        }
+    }
+    framebuffer::blit_buffer(&gradient_buf, gradient_x, gradient_y, gradient_w, gradient_h);
+    
+    print_colored("  Demo complete!\n", theme.success_color);
+    crate::println!("  Rendered: 6 solid rects + 1 gradient box");
 }
 
 fn cmd_net(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {

@@ -447,6 +447,78 @@ pub fn clear_current_line() {
     }
 }
 
+/// Get framebuffer dimensions (width, height)
+pub fn get_dimensions() -> (usize, usize) {
+    let fb = FB.lock();
+    if let Some(ref framebuffer) = *fb {
+        (framebuffer.width, framebuffer.height)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Get raw framebuffer info for graphics system
+pub fn get_framebuffer_info() -> Option<(*mut u8, usize, usize, usize)> {
+    let fb = FB.lock();
+    if let Some(ref framebuffer) = *fb {
+        Some((
+            framebuffer.addr as *mut u8,
+            framebuffer.width,
+            framebuffer.height,
+            framebuffer.pitch * 4  // Convert back to bytes
+        ))
+    } else {
+        None
+    }
+}
+
+/// Blit a pixel buffer directly to the framebuffer
+pub fn blit_buffer(pixels: &[u32], x: usize, y: usize, w: usize, h: usize) {
+    let mut fb = FB.lock();
+    if let Some(ref mut framebuffer) = *fb {
+        for dy in 0..h {
+            let screen_y = y + dy;
+            if screen_y >= framebuffer.height {
+                break;
+            }
+            
+            for dx in 0..w {
+                let screen_x = x + dx;
+                if screen_x >= framebuffer.width {
+                    break;
+                }
+                
+                let src_idx = dy * w + dx;
+                if src_idx < pixels.len() {
+                    framebuffer.put_pixel(screen_x, screen_y, pixels[src_idx]);
+                }
+            }
+        }
+    }
+}
+
+/// Draw a filled rectangle directly on framebuffer
+pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u32) {
+    let mut fb = FB.lock();
+    if let Some(ref framebuffer) = *fb {
+        for dy in 0..h {
+            let screen_y = y + dy;
+            if screen_y >= framebuffer.height {
+                break;
+            }
+            
+            for dx in 0..w {
+                let screen_x = x + dx;
+                if screen_x >= framebuffer.width {
+                    break;
+                }
+                
+                framebuffer.put_pixel(screen_x, screen_y, color);
+            }
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {{

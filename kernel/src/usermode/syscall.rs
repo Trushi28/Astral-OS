@@ -35,6 +35,8 @@ pub const SYS_GRAPHICS_CREATE_SURFACE: u64 = 2000;
 pub const SYS_GRAPHICS_DESTROY_SURFACE: u64 = 2001;
 pub const SYS_GRAPHICS_BLIT: u64 = 2002;
 pub const SYS_GRAPHICS_PRESENT: u64 = 2003;
+pub const SYS_GRAPHICS_FILL_RECT: u64 = 2004;
+pub const SYS_GRAPHICS_GET_SCREEN_SIZE: u64 = 2005;
 
 /// System call result
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -89,6 +91,8 @@ pub fn handle_syscall(
         SYS_GRAPHICS_CREATE_SURFACE => sys_graphics_create_surface(arg1 as u32, arg2 as u32),
         SYS_GRAPHICS_BLIT => sys_graphics_blit(arg1, arg2 as *const u8, arg3 as usize),
         SYS_GRAPHICS_PRESENT => sys_graphics_present(arg1),
+        SYS_GRAPHICS_FILL_RECT => sys_graphics_fill_rect(arg1, arg2 as u32, arg3 as u32, arg4 as u32, arg5 as u32, 0xFFFFFFFF),
+        SYS_GRAPHICS_GET_SCREEN_SIZE => sys_graphics_get_screen_size(),
         
         _ => Err(SyscallError::InvalidSyscall),
     };
@@ -281,9 +285,11 @@ fn sys_graphics_create_surface(width: u32, height: u32) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
     
-    // Allocate surface in graphics server
-    // Return surface ID
-    Err(SyscallError::NotImplemented)
+    // Create surface in graphics server
+    match crate::graphics::create_surface(width, height) {
+        Ok(id) => Ok(id),
+        Err(_) => Err(SyscallError::OutOfMemory),
+    }
 }
 
 fn sys_graphics_blit(surface_id: u64, pixels: *const u8, size: usize) -> SyscallResult {
@@ -292,12 +298,66 @@ fn sys_graphics_blit(surface_id: u64, pixels: *const u8, size: usize) -> Syscall
     }
     
     // Copy pixel data to surface
-    Err(SyscallError::NotImplemented)
+    unsafe {
+        let data = slice::from_raw_parts(pixels, size);
+        match crate::graphics::update_surface(surface_id, data) {
+            Ok(()) => Ok(0),
+            Err(_) => Err(SyscallError::InvalidArgument),
+        }
+    }
 }
 
 fn sys_graphics_present(surface_id: u64) -> SyscallResult {
-    // Mark surface for presentation
-    Err(SyscallError::NotImplemented)
+    // Present surface to screen
+    match crate::graphics::present_surface(surface_id) {
+        Ok(()) => {
+            // Trigger composition
+            crate::graphics::composite_frame();
+            Ok(0)
+        },
+        Err(_) => Err(SyscallError::InvalidArgument),
+    }
+}
+
+// Additional graphics syscalls for drawing primitives
+fn sys_graphics_fill_rect(surface_id: u64, x: u32, y: u32, w: u32, h: u32, color: u32) -> SyscallResult {
+    let result = crate::graphics::with_server(|server| {
+        if let Some(surface) = server.get_surface_mut(surface_id) {
+            // Fill rectangle on surface
+            let bytes_per_pixel = surface.format.bytes_per_pixel();
+            for dy in 0..h {
+                for dx in 0..w {
+                    let px = x + dx;
+                    let py = y + dy;
+                    if px < surface.width && py < surface.height {
+                        let offset = (py * surface.width + px) as usize * bytes_per_pixel;
+                        if offset + 3 < surface.pixels.len() {
+                            // RGBA format
+                            surface.pixels[offset] = ((color >> 24) & 0xFF) as u8;
+                            surface.pixels[offset + 1] = ((color >> 16) & 0xFF) as u8;
+                            surface.pixels[offset + 2] = ((color >> 8) & 0xFF) as u8;
+                            surface.pixels[offset + 3] = (color & 0xFF) as u8;
+                        }
+                    }
+                }
+            }
+            surface.mark_dirty();
+            true
+        } else {
+            false
+        }
+    });
+    
+    match result {
+        Some(true) => Ok(0),
+        _ => Err(SyscallError::InvalidArgument),
+    }
+}
+
+fn sys_graphics_get_screen_size() -> SyscallResult {
+    let (width, height) = crate::drivers::framebuffer::get_dimensions();
+    // Pack width and height into return value (width in high 32 bits, height in low 32 bits)
+    Ok(((width as u64) << 32) | (height as u64))
 }
 
 // Utility functions

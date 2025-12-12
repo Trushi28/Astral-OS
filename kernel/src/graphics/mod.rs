@@ -12,6 +12,15 @@ use compositor::Compositor;
 
 static GRAPHICS_SERVER: Mutex<Option<GraphicsServer>> = Mutex::new(None);
 
+/// Access the graphics server with a closure
+pub fn with_server<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut GraphicsServer) -> R
+{
+    let mut guard = GRAPHICS_SERVER.lock();
+    guard.as_mut().map(f)
+}
+
 pub struct GraphicsServer {
     compositor: Compositor,
     surfaces: Vec<Surface>,
