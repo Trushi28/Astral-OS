@@ -336,8 +336,6 @@ timeline show         # Shows branch count
 ## 📁 Project Structure
 
 ```
-  tree
-.
 Astral-OS/
 ├── kernel
 │   ├── build.rs
