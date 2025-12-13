@@ -1,8 +1,61 @@
 // src/graphics/compositor.rs
-//! Hardware-accelerated compositor (video game style)
+//! Hardware-accelerated compositor for Astral OS
+//!
+//! Features:
+//! - Double buffering for tear-free rendering
+//! - Global damage tracking for efficient updates
+//! - Optimized alpha blending with fast paths
+//! - Layer-based compositing
 
 use super::surface::{Surface, PixelFormat};
+use alloc::vec::Vec;
 use core::ptr::write_volatile;
+
+/// Damage rectangle for efficient updates
+#[derive(Clone, Copy, Debug)]
+pub struct DamageRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DamageRect {
+    pub fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self { x, y, width, height }
+    }
+    
+    /// Merge with another rectangle (union)
+    pub fn merge(&self, other: &DamageRect) -> DamageRect {
+        let x1 = self.x.min(other.x);
+        let y1 = self.y.min(other.y);
+        let x2 = (self.x + self.width as i32).max(other.x + other.width as i32);
+        let y2 = (self.y + self.height as i32).max(other.y + other.height as i32);
+        
+        DamageRect {
+            x: x1,
+            y: y1,
+            width: (x2 - x1) as u32,
+            height: (y2 - y1) as u32,
+        }
+    }
+    
+    /// Check if rectangles overlap
+    pub fn overlaps(&self, other: &DamageRect) -> bool {
+        self.x < other.x + other.width as i32 &&
+        self.x + self.width as i32 > other.x &&
+        self.y < other.y + other.height as i32 &&
+        self.y + self.height as i32 > other.y
+    }
+}
+
+/// Buffer index for triple buffering
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BufferIndex {
+    Front = 0,
+    Back = 1,
+    Middle = 2,
+}
 
 pub struct Compositor {
     framebuffer: *mut u32,
@@ -10,13 +63,19 @@ pub struct Compositor {
     height: usize,
     pitch: usize,
     
-    // Back buffer for double buffering
-    back_buffer: Option<alloc::vec::Vec<u32>>,
+    // Double buffering (simpler than triple to reduce memory)
+    back_buffer: Option<Vec<u32>>,
     double_buffered: bool,
+    
+    // Global damage tracking
+    damage_rects: Vec<DamageRect>,
+    full_redraw: bool,
     
     // Performance stats
     pub frame_count: u64,
     pub surface_count: usize,
+    pub pixels_composited: u64,
+    pub blend_operations: u64,
 }
 
 unsafe impl Send for Compositor {}
@@ -25,6 +84,8 @@ unsafe impl Sync for Compositor {}
 impl Compositor {
     pub fn new(framebuffer_addr: *mut u8, width: usize, height: usize, pitch: usize) -> Self {
         let double_buffered = true;
+        
+        // Create back buffer for double buffering
         let back_buffer = if double_buffered {
             Some(alloc::vec![0u32; width * height])
         } else {
@@ -38,39 +99,89 @@ impl Compositor {
             pitch: pitch / 4, // Convert bytes to u32
             back_buffer,
             double_buffered,
+            damage_rects: Vec::with_capacity(32),
+            full_redraw: true,
             frame_count: 0,
             surface_count: 0,
+            pixels_composited: 0,
+            blend_operations: 0,
         }
+    }
+    
+    /// Add damage rectangle
+    pub fn add_damage(&mut self, rect: DamageRect) {
+        // Merge with existing overlapping rects
+        for existing in &mut self.damage_rects {
+            if existing.overlaps(&rect) {
+                *existing = existing.merge(&rect);
+                return;
+            }
+        }
+        self.damage_rects.push(rect);
+    }
+    
+    /// Mark entire screen for redraw
+    pub fn mark_full_redraw(&mut self) {
+        self.full_redraw = true;
+        self.damage_rects.clear();
     }
     
     pub fn begin_frame(&mut self) {
-        // Clear back buffer if using double buffering
+        // Clear back buffer
         if let Some(ref mut buffer) = self.back_buffer {
-            buffer.fill(0xFF000000); // Black with full alpha
+            if self.full_redraw {
+                buffer.fill(0xFF000000); // Black with full alpha
+            }
         }
         
         self.surface_count = 0;
+        self.pixels_composited = 0;
     }
     
     pub fn end_frame(&mut self) {
-        // Copy back buffer to framebuffer if double buffering
+        // Copy back buffer to framebuffer
         if let Some(ref buffer) = self.back_buffer {
             unsafe {
-                for y in 0..self.height {
-                    let src_offset = y * self.width;
-                    let dst_offset = y * self.pitch;
-                    
-                    for x in 0..self.width {
-                        let pixel = buffer[src_offset + x];
-                        write_volatile(
-                            self.framebuffer.add(dst_offset + x),
-                            pixel
+                // Optimized scanline copy
+                if self.full_redraw {
+                    // Full frame copy
+                    for y in 0..self.height {
+                        let src_offset = y * self.width;
+                        let dst_offset = y * self.pitch;
+                        
+                        // Copy entire scanline at once
+                        core::ptr::copy_nonoverlapping(
+                            buffer.as_ptr().add(src_offset),
+                            self.framebuffer.add(dst_offset),
+                            self.width
                         );
+                    }
+                } else {
+                    // Partial update - only copy damaged regions
+                    for rect in &self.damage_rects {
+                        let start_y = rect.y.max(0) as usize;
+                        let end_y = (rect.y + rect.height as i32).min(self.height as i32) as usize;
+                        let start_x = rect.x.max(0) as usize;
+                        let end_x = (rect.x + rect.width as i32).min(self.width as i32) as usize;
+                        
+                        for y in start_y..end_y {
+                            let src_offset = y * self.width + start_x;
+                            let dst_offset = y * self.pitch + start_x;
+                            
+                            core::ptr::copy_nonoverlapping(
+                                buffer.as_ptr().add(src_offset),
+                                self.framebuffer.add(dst_offset),
+                                end_x - start_x
+                            );
+                        }
                     }
                 }
             }
         }
         
+        // Reset damage tracking
+        self.damage_rects.clear();
+        self.full_redraw = false;
         self.frame_count += 1;
     }
     
@@ -153,6 +264,7 @@ impl Compositor {
                         write_volatile(dest.add(dst_offset), color);
                     }
                 }
+                self.pixels_composited += 1;
             }
         }
     }
@@ -295,5 +407,6 @@ impl Compositor {
                 }
             }
         }
+        self.full_redraw = true;
     }
 }

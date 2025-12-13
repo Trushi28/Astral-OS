@@ -275,3 +275,211 @@ pub fn memory_barrier() {
 pub fn compiler_barrier() {
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
 }
+
+// ============================================================================
+// Additional Synchronization Primitives
+// ============================================================================
+
+/// Counting semaphore
+pub struct Semaphore {
+    count: AtomicUsize,
+    max_count: usize,
+}
+
+impl Semaphore {
+    /// Create a semaphore with initial count
+    pub const fn new(initial: usize) -> Self {
+        Self {
+            count: AtomicUsize::new(initial),
+            max_count: usize::MAX,
+        }
+    }
+    
+    /// Create a bounded semaphore
+    pub const fn bounded(initial: usize, max: usize) -> Self {
+        Self {
+            count: AtomicUsize::new(initial),
+            max_count: max,
+        }
+    }
+    
+    /// Acquire (decrement) - blocks if count is 0
+    pub fn acquire(&self) {
+        loop {
+            let current = self.count.load(Ordering::Acquire);
+            if current > 0 {
+                if self.count.compare_exchange_weak(
+                    current,
+                    current - 1,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed
+                ).is_ok() {
+                    return;
+                }
+            }
+            core::hint::spin_loop();
+        }
+    }
+    
+    /// Try to acquire without blocking
+    pub fn try_acquire(&self) -> bool {
+        let current = self.count.load(Ordering::Acquire);
+        if current > 0 {
+            self.count.compare_exchange(
+                current,
+                current - 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed
+            ).is_ok()
+        } else {
+            false
+        }
+    }
+    
+    /// Release (increment)
+    pub fn release(&self) {
+        loop {
+            let current = self.count.load(Ordering::Acquire);
+            if current >= self.max_count {
+                return; // At max
+            }
+            if self.count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed
+            ).is_ok() {
+                return;
+            }
+        }
+    }
+    
+    /// Get current count
+    pub fn available(&self) -> usize {
+        self.count.load(Ordering::Relaxed)
+    }
+}
+
+/// Condition variable (busy-wait version)
+pub struct Condvar {
+    notified: AtomicBool,
+    waiters: AtomicUsize,
+}
+
+impl Condvar {
+    pub const fn new() -> Self {
+        Self {
+            notified: AtomicBool::new(false),
+            waiters: AtomicUsize::new(0),
+        }
+    }
+    
+    /// Wait for a notification (busy-wait)
+    pub fn wait(&self) {
+        self.waiters.fetch_add(1, Ordering::Relaxed);
+        
+        while !self.notified.swap(false, Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+        
+        self.waiters.fetch_sub(1, Ordering::Relaxed);
+    }
+    
+    /// Notify one waiter
+    pub fn notify_one(&self) {
+        self.notified.store(true, Ordering::Release);
+    }
+    
+    /// Notify all waiters
+    pub fn notify_all(&self) {
+        // Set flag multiple times for all waiters
+        let count = self.waiters.load(Ordering::Relaxed);
+        for _ in 0..count {
+            self.notified.store(true, Ordering::Release);
+        }
+    }
+    
+    /// Check if there are waiters
+    pub fn has_waiters(&self) -> bool {
+        self.waiters.load(Ordering::Relaxed) > 0
+    }
+}
+
+/// Barrier for synchronizing multiple threads
+pub struct Barrier {
+    threshold: usize,
+    count: AtomicUsize,
+    generation: AtomicUsize,
+}
+
+impl Barrier {
+    /// Create a barrier for n threads
+    pub const fn new(n: usize) -> Self {
+        Self {
+            threshold: n,
+            count: AtomicUsize::new(0),
+            generation: AtomicUsize::new(0),
+        }
+    }
+    
+    /// Wait at the barrier
+    pub fn wait(&self) {
+        let gen = self.generation.load(Ordering::Relaxed);
+        let count = self.count.fetch_add(1, Ordering::AcqRel);
+        
+        if count + 1 >= self.threshold {
+            // Last thread to arrive - reset and advance generation
+            self.count.store(0, Ordering::Relaxed);
+            self.generation.fetch_add(1, Ordering::Release);
+        } else {
+            // Wait for generation to change
+            while self.generation.load(Ordering::Acquire) == gen {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+/// Once - run initialization exactly once
+pub struct Once {
+    state: AtomicUsize,
+}
+
+const ONCE_UNINIT: usize = 0;
+const ONCE_RUNNING: usize = 1;
+const ONCE_COMPLETE: usize = 2;
+
+impl Once {
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicUsize::new(ONCE_UNINIT),
+        }
+    }
+    
+    /// Call the function exactly once
+    pub fn call_once<F: FnOnce()>(&self, f: F) {
+        if self.state.load(Ordering::Acquire) == ONCE_COMPLETE {
+            return;
+        }
+        
+        if self.state.compare_exchange(
+            ONCE_UNINIT,
+            ONCE_RUNNING,
+            Ordering::AcqRel,
+            Ordering::Acquire
+        ).is_ok() {
+            f();
+            self.state.store(ONCE_COMPLETE, Ordering::Release);
+        } else {
+            // Wait for completion
+            while self.state.load(Ordering::Acquire) != ONCE_COMPLETE {
+                core::hint::spin_loop();
+            }
+        }
+    }
+    
+    /// Check if initialization is complete
+    pub fn is_complete(&self) -> bool {
+        self.state.load(Ordering::Acquire) == ONCE_COMPLETE
+    }
+}

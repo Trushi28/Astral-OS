@@ -520,7 +520,7 @@ fn cmd_smp(theme: &ShellTheme) {
     
     for cpu_id in online_cpus() {
         if let Some(data) = get_cpu_data(cpu_id) {
-            let (queue_len, idle) = get_cpu_stats(cpu_id);
+            let (queue_len, _context_switches, idle) = get_cpu_stats(cpu_id);
             let state = if data.info.bsp { "BSP    " } else { "AP     " };
             
             crate::println!("{:<3}  0x{:04x}   {}  {:<5}  {}",

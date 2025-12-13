@@ -6,7 +6,7 @@ use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const FS_MAGIC: u32 = 0x50535946; // "PSYF"
-const FS_VERSION: u16 = 1;
+const FS_VERSION: u16 = 2; // Bumped version for new format
 const SUPERBLOCK_SECTOR: u64 = 0;
 const INODE_TABLE_START: u64 = 1;
 const INODE_TABLE_SECTORS: u64 = 64;
@@ -16,7 +16,11 @@ const DATA_BLOCKS_START: u64 = 128;
 const MAX_FILENAME_LEN: usize = 56;
 const MAX_FILES: usize = 256;
 const BLOCK_SIZE: usize = 512;
-const MAX_FILE_BLOCKS: usize = 8;
+const MAX_FILE_BLOCKS: usize = 8; // Keep at 8 to fit inode in 128 bytes (4KB max file size)
+
+// Cache configuration
+const CACHE_SIZE: usize = 32; // Number of cached blocks
+const CACHE_WRITEBACK_INTERVAL: u64 = 100; // Ticks between writebacks
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -78,23 +82,209 @@ impl Inode {
     }
 }
 
+/// Block cache entry
+#[derive(Clone, Copy)]
+pub struct CacheEntry {
+    pub block_num: u32,
+    pub data: [u8; BLOCK_SIZE],
+    pub dirty: bool,
+    pub access_count: u32,
+    pub last_access: u64,
+}
+
+impl CacheEntry {
+    pub const fn empty() -> Self {
+        Self {
+            block_num: 0,
+            data: [0; BLOCK_SIZE],
+            dirty: false,
+            access_count: 0,
+            last_access: 0,
+        }
+    }
+}
+
+/// Access pattern for predictive loading
+#[derive(Clone, Copy)]
+pub struct AccessPattern {
+    pub inode: u32,
+    pub last_block: u32,
+    pub access_count: u32,
+    pub sequential_count: u32,
+}
+
+impl AccessPattern {
+    pub const fn empty() -> Self {
+        Self {
+            inode: 0,
+            last_block: 0,
+            access_count: 0,
+            sequential_count: 0,
+        }
+    }
+}
+
 pub struct PsychicFs {
     pub mounted: bool,
     pub superblock: Superblock,
     pub block_bitmap: [u8; 1024],
     pub bitmap_dirty: AtomicBool,
     pub superblock_dirty: AtomicBool,
+    // Block cache for read/write optimization
+    pub cache: [CacheEntry; CACHE_SIZE],
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    // Access pattern tracking for predictive loading
+    pub patterns: [AccessPattern; 16],
 }
 
 impl PsychicFs {
     pub fn new() -> Self {
+        const EMPTY_CACHE: CacheEntry = CacheEntry::empty();
+        const EMPTY_PATTERN: AccessPattern = AccessPattern::empty();
         Self {
             mounted: false,
             superblock: unsafe { core::mem::zeroed() },
             block_bitmap: [0; 1024],
             bitmap_dirty: AtomicBool::new(false),
             superblock_dirty: AtomicBool::new(false),
+            cache: [EMPTY_CACHE; CACHE_SIZE],
+            cache_hits: 0,
+            cache_misses: 0,
+            patterns: [EMPTY_PATTERN; 16],
         }
+    }
+    
+    /// Read block through cache
+    pub fn cached_read(&mut self, block_num: u32, buffer: &mut [u8; BLOCK_SIZE]) -> bool {
+        // Check cache first
+        for entry in &mut self.cache {
+            if entry.block_num == block_num && entry.access_count > 0 {
+                buffer.copy_from_slice(&entry.data);
+                entry.access_count += 1;
+                entry.last_access = crate::get_timestamp();
+                self.cache_hits += 1;
+                return true;
+            }
+        }
+        
+        self.cache_misses += 1;
+        
+        // Cache miss - read from disk
+        if !disk_read_sector(block_num as u64, buffer) {
+            return false;
+        }
+        
+        // Add to cache (LRU replacement)
+        self.cache_insert(block_num, buffer, false);
+        true
+    }
+    
+    /// Write block through cache
+    pub fn cached_write(&mut self, block_num: u32, data: &[u8; BLOCK_SIZE]) -> bool {
+        // Update cache if present
+        for entry in &mut self.cache {
+            if entry.block_num == block_num && entry.access_count > 0 {
+                entry.data.copy_from_slice(data);
+                entry.dirty = true;
+                entry.access_count += 1;
+                entry.last_access = crate::get_timestamp();
+                return true;
+            }
+        }
+        
+        // Add to cache
+        self.cache_insert(block_num, data, true);
+        true
+    }
+    
+    /// Insert block into cache with LRU replacement
+    fn cache_insert(&mut self, block_num: u32, data: &[u8; BLOCK_SIZE], dirty: bool) {
+        // Find empty slot or LRU entry
+        let mut min_access = u64::MAX;
+        let mut min_idx = 0;
+        
+        for (i, entry) in self.cache.iter().enumerate() {
+            if entry.access_count == 0 {
+                min_idx = i;
+                break;
+            }
+            if entry.last_access < min_access {
+                min_access = entry.last_access;
+                min_idx = i;
+            }
+        }
+        
+        // Write back dirty entry if being evicted
+        if self.cache[min_idx].dirty && self.cache[min_idx].access_count > 0 {
+            disk_write_sector(self.cache[min_idx].block_num as u64, &self.cache[min_idx].data);
+        }
+        
+        // Insert new entry
+        self.cache[min_idx] = CacheEntry {
+            block_num,
+            data: *data,
+            dirty,
+            access_count: 1,
+            last_access: crate::get_timestamp(),
+        };
+    }
+    
+    /// Flush all dirty cache entries to disk
+    pub fn flush_cache(&mut self) -> bool {
+        let mut success = true;
+        for entry in &mut self.cache {
+            if entry.dirty && entry.access_count > 0 {
+                if disk_write_sector(entry.block_num as u64, &entry.data) {
+                    entry.dirty = false;
+                } else {
+                    success = false;
+                }
+            }
+        }
+        success
+    }
+    
+    /// Record access pattern for predictive loading
+    pub fn record_access(&mut self, inode: u32, block: u32) {
+        for pattern in &mut self.patterns {
+            if pattern.inode == inode {
+                if block == pattern.last_block + 1 {
+                    pattern.sequential_count += 1;
+                }
+                pattern.last_block = block;
+                pattern.access_count += 1;
+                return;
+            }
+        }
+        
+        // New inode - find empty or least accessed slot
+        let mut min_access = u32::MAX;
+        let mut min_idx = 0;
+        for (i, pattern) in self.patterns.iter().enumerate() {
+            if pattern.access_count < min_access {
+                min_access = pattern.access_count;
+                min_idx = i;
+            }
+        }
+        
+        self.patterns[min_idx] = AccessPattern {
+            inode,
+            last_block: block,
+            access_count: 1,
+            sequential_count: 0,
+        };
+    }
+    
+    /// Predict next blocks to prefetch based on access patterns
+    pub fn predict_prefetch(&self, inode: u32) -> Option<u32> {
+        for pattern in &self.patterns {
+            if pattern.inode == inode && pattern.sequential_count > 2 {
+                // Sequential access detected, prefetch next block
+                return Some(pattern.last_block + 1);
+            }
+        }
+        None
     }
     
     pub fn mark_dirty(&mut self) {
@@ -339,8 +529,11 @@ pub fn fs_sync() {
 fn find_inode_by_name(name: &str) -> Option<(u32, Inode)> {
     let mut buffer = [0u8; 512];
     
+    crate::serial_println!("[FS] find_inode_by_name: looking for '{}'", name);
+    
     for sector in 0..INODE_TABLE_SECTORS {
         if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
+            crate::serial_println!("[FS] find: failed to read sector {}", sector);
             continue;
         }
         
@@ -348,13 +541,21 @@ fn find_inode_by_name(name: &str) -> Option<(u32, Inode)> {
             let offset = i * 128;
             let inode = bytes_to_inode(&buffer[offset..offset + 128]);
             
-            if inode.in_use != 0 && inode.get_name() == name {
-                let inode_num = (sector * 4 + i as u64) as u32;
-                return Some((inode_num, inode));
+            if inode.in_use != 0 {
+                let inode_name = inode.get_name();
+                crate::serial_println!("[FS] find: sector {} slot {} in_use={} name='{}' (looking for '{}')", 
+                    sector, i, inode.in_use, inode_name, name);
+                
+                if inode_name == name {
+                    let inode_num = (sector * 4 + i as u64) as u32;
+                    crate::serial_println!("[FS] find: FOUND at inode {}", inode_num);
+                    return Some((inode_num, inode));
+                }
             }
         }
     }
     
+    crate::serial_println!("[FS] find: NOT FOUND");
     None
 }
 
@@ -383,6 +584,8 @@ fn write_inode(inode_num: u32, inode: &Inode) -> bool {
     let sector = (inode_num / 4) as u64;
     let offset = (inode_num % 4) as usize * 128;
     
+    crate::serial_println!("[FS] write_inode: inode={} sector={} offset={}", inode_num, sector, offset);
+    
     let mut buffer = [0u8; 512];
     if !disk_read_sector(INODE_TABLE_START + sector, &mut buffer) {
         crate::serial_println!("[FS] Failed to read inode sector for write");
@@ -392,11 +595,27 @@ fn write_inode(inode_num: u32, inode: &Inode) -> bool {
     let inode_bytes = inode_to_bytes(inode);
     buffer[offset..offset + 128].copy_from_slice(&inode_bytes);
     
+    crate::serial_println!("[FS] write_inode: writing to sector {} (abs: {})", sector, INODE_TABLE_START + sector);
+    
     if !disk_write_sector(INODE_TABLE_START + sector, &buffer) {
         crate::serial_println!("[FS] Failed to write inode sector");
         return false;
     }
     
+    // Verify write succeeded by reading back
+    let mut verify_buffer = [0u8; 512];
+    if !disk_read_sector(INODE_TABLE_START + sector, &mut verify_buffer) {
+        crate::serial_println!("[FS] Failed to verify inode write");
+        return false;
+    }
+    
+    let written_inode = bytes_to_inode(&verify_buffer[offset..offset + 128]);
+    if written_inode.in_use != inode.in_use {
+        crate::serial_println!("[FS] VERIFY FAILED: in_use mismatch {} vs {}", written_inode.in_use, inode.in_use);
+        return false;
+    }
+    
+    crate::serial_println!("[FS] write_inode: verified OK, in_use={}", written_inode.in_use);
     true
 }
 

@@ -3,9 +3,11 @@ pub mod frame;
 pub mod paging;
 pub mod heap;
 pub mod fractal;
+pub mod slab;
 
 pub use frame::{PhysAddr, allocate_frame, deallocate_frame};
 pub use paging::{VirtAddr, PageTableEntry, PageTableManager};
+pub use slab::{slab_alloc, slab_free, get_slab_stats, SlabStats};
 
 use crate::{HHDM_REQUEST, MEMORY_MAP_REQUEST};
 
@@ -27,6 +29,9 @@ pub fn init() {
     // Initialize heap
     heap::init();
     
+    // Initialize slab allocator
+    slab::init();
+    
     // Initialize fractal allocator
     fractal::init();
     
@@ -40,7 +45,10 @@ pub fn init() {
     crate::println!("  Heap: {} KB used, {} KB free",
         heap_used / 1024, heap_free / 1024);
     
-    if let Some(stats) = fractal::get_fractal_stats() {
+    let slab_stats = slab::get_slab_stats();
+    crate::println!("  Slab: {} active objects", slab_stats.active_objects);
+    
+    if let Some(_stats) = fractal::get_fractal_stats() {
         crate::println!("  Fractal: Initialized");
     }
 }

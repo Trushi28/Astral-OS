@@ -65,6 +65,57 @@ impl Registers {
     }
 }
 
+/// Process priority class for AstralScheduler
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum PriorityClass {
+    /// Real-time priority - immediate execution, minimal preemption
+    RealTime = 0,
+    /// High priority - interactive processes, short time slices
+    Interactive = 1,
+    /// Normal priority - batch processes
+    Normal = 2,
+    /// Low priority - background tasks
+    Background = 3,
+    /// Dream priority - only runs during idle/dream state
+    Dream = 4,
+}
+
+impl Default for PriorityClass {
+    fn default() -> Self {
+        PriorityClass::Normal
+    }
+}
+
+/// Process intent declaration for intent-based scheduling
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessIntent {
+    /// No specific intent
+    None,
+    /// CPU-bound computation
+    Compute,
+    /// I/O bound operation
+    IoWait,
+    /// Memory-intensive operation
+    MemoryIntensive,
+    /// Network communication
+    Network,
+    /// Graphics/UI operation
+    Graphics,
+    /// File system operation
+    FileSystem,
+    /// Reality branching operation
+    RealityBranch,
+    /// Interactive user-facing operation
+    Interactive,
+}
+
+impl Default for ProcessIntent {
+    fn default() -> Self {
+        ProcessIntent::None
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Process {
     pub pid: Pid,
@@ -72,6 +123,15 @@ pub struct Process {
     pub registers: Registers,
     pub page_table: u64,
     pub kernel_stack: u64,
+    // AstralScheduler fields
+    pub priority: PriorityClass,
+    pub intent: ProcessIntent,
+    pub reality_id: u64,       // Which reality branch this process belongs to
+    pub cpu_affinity: u64,     // Bitmask of preferred CPUs (0 = any)
+    pub time_slice: u64,       // Remaining time slice in ticks
+    pub total_runtime: u64,    // Total runtime in ticks
+    pub last_scheduled: u64,   // Timestamp of last schedule
+    pub wait_reason: u64,      // Why process is blocked (if blocked)
 }
 
 impl Process {
@@ -82,6 +142,50 @@ impl Process {
             registers: Registers::new(),
             page_table: 0,
             kernel_stack: 0,
+            priority: PriorityClass::Normal,
+            intent: ProcessIntent::None,
+            reality_id: 0,
+            cpu_affinity: 0,
+            time_slice: 10, // Default time slice
+            total_runtime: 0,
+            last_scheduled: 0,
+            wait_reason: 0,
+        }
+    }
+    
+    /// Create a new process with specific priority
+    pub fn with_priority(pid: Pid, priority: PriorityClass) -> Self {
+        let mut proc = Self::new(pid);
+        proc.priority = priority;
+        proc.time_slice = Self::time_slice_for_priority(priority);
+        proc
+    }
+    
+    /// Get default time slice for priority class
+    pub fn time_slice_for_priority(priority: PriorityClass) -> u64 {
+        match priority {
+            PriorityClass::RealTime => 20,
+            PriorityClass::Interactive => 5,
+            PriorityClass::Normal => 10,
+            PriorityClass::Background => 15,
+            PriorityClass::Dream => 50, // Long slices during dream mode
+        }
+    }
+    
+    /// Set process intent and adjust scheduling hints
+    pub fn set_intent(&mut self, intent: ProcessIntent) {
+        self.intent = intent;
+        // Adjust priority based on intent (optional optimization)
+        match intent {
+            ProcessIntent::Graphics | ProcessIntent::Interactive => {
+                if self.priority > PriorityClass::Interactive {
+                    self.priority = PriorityClass::Interactive;
+                }
+            }
+            ProcessIntent::IoWait | ProcessIntent::FileSystem => {
+                // I/O bound processes get boosted when they become ready
+            }
+            _ => {}
         }
     }
 }
