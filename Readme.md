@@ -1,6 +1,6 @@
-# Astral OS v0.3.0
+# Astral OS v0.3.1
 
-**A reality-aware operating system with causal tracking, dream states, and intent-based computing.**
+**A reality-aware operating system with causal tracking, dream states, SMP support, and intent-based computing.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: Nightly](https://img.shields.io/badge/Rust-Nightly-orange.svg)](https://rust-lang.org)
@@ -20,22 +20,40 @@
 - **Physical Frame Allocator**: Lock-free bitmap-based allocator supporting up to 4GB RAM
 - **Page Table Manager**: Full 4-level paging with recursive mapping
 - **Kernel Heap**: Proper linked-list allocator with coalescing (100MB default)
+- **Slab Allocator**: O(1) allocation with 8 size classes (32B-4KB)
 
 ### Process Management
-- **Cooperative Scheduler**: Round-robin scheduling with time slices
+- **AstralScheduler**: O(1) priority-based scheduler with 5 priority classes
+- **Intent-Aware Scheduling**: Processes declare intent (Graphics, IO, Compute, etc.)
+- **Dream-Mode Optimization**: Background tasks run during system idle
+- **SMP Support**: Multi-core processing with per-CPU run queues
 - **Full Context Switching**: Complete register preservation including FPU state
 - **Process Isolation**: Per-process page tables with kernel/user separation
 
 ### Filesystem
-- **PsychicFS**: Predictive filesystem with access pattern learning
+- **Virtual Filesystem (VFS)**: Unified interface for all filesystem operations
+- **PsychicFS**: Predictive filesystem with block cache and access pattern learning
 - **Reality-Aware Storage**: Files tracked across timeline branches
-- **Simple Design**: 8KB max file size, 256 files, designed for demos
+- **Path Caching**: Fast path resolution for improved performance
+
+### Graphics
+- **Double-Buffered Compositor**: Tear-free rendering with damage tracking
+- **Astral Display Server**: Wayland-inspired display server architecture
+- **Window Management**: Server-side decorations and compositing
+- **Alpha Blending**: Optimized Porter-Duff compositing
+
+### Synchronization
+- **Spinlock & Mutex**: IRQ-safe locking primitives
+- **RwLock**: Reader-writer locks for concurrent access
+- **Semaphore**: Counting semaphores with bounded support
+- **Condvar & Barrier**: Thread coordination primitives
 
 ### Drivers
-- **Framebuffer**: TrueType font rendering via `fontdue` (SpaceMono)
+- **Framebuffer**: TrueType font rendering via `noto-sans-mono-bitmap`
 - **VirtIO Block**: Full modern VirtIO 1.0 implementation with proper queue management
 - **Serial Port**: COM1 debugging output
 - **PS/2 Keyboard**: Full scancode translation with modifier support
+- **APIC/IOAPIC**: Modern interrupt handling with SMP support
 
 ---
 
@@ -46,27 +64,41 @@ Astral OS
 ├── Memory Layer
 │   ├── Physical Frame Allocator (lock-free bitmap)
 │   ├── Page Table Manager (4-level paging)
-│   └── Kernel Heap (linked-list allocator)
+│   ├── Kernel Heap (linked-list allocator)
+│   └── Slab Allocator (8 size classes)
 ├── Process Layer
 │   ├── Process Control Blocks
-│   ├── Scheduler (round-robin)
+│   ├── AstralScheduler (O(1) priority-based)
+│   ├── Per-CPU Run Queues (SMP)
 │   └── Context Switching (assembly)
 ├── Interrupt Layer
 │   ├── IDT with 256 entries
 │   ├── GDT & TSS (proper ring transitions)
-│   ├── PIC (8259) initialization
+│   ├── APIC & IOAPIC
 │   └── Exception/IRQ handlers
+├── Synchronization Layer
+│   ├── Spinlock, Mutex, RwLock
+│   ├── Semaphore, Condvar, Barrier
+│   └── Once (one-time initialization)
 ├── Driver Layer
-│   ├── Framebuffer (fontdue TrueType)
+│   ├── Framebuffer (noto-sans-mono-bitmap)
 │   ├── VirtIO Block (modern spec)
 │   ├── Serial (COM1 debug)
 │   └── Keyboard (PS/2)
 ├── Filesystem Layer
+│   ├── Virtual Filesystem (VFS)
 │   └── PsychicFS (predictive FS)
+├── Graphics Layer
+│   ├── Compositor (double-buffered)
+│   ├── Astral Display Server
+│   └── Surface Management
 ├── Reality Engine
 │   ├── Causality Tracker
 │   ├── Dream State Manager
 │   └── Intent Resolver
+├── GUI Layer
+│   ├── Desktop Environment
+│   └── Window Manager
 └── Shell
     └── Interactive command interface
 ```
@@ -90,16 +122,6 @@ sudo apt install build-essential xorriso mtools
 # For Arch-based linux
 sudo pacman -S base-devel xorriso mtools
 
-```
-
-### Required Font
-
-Place `SpaceMono-Regular.ttf` in the `kernel/` directory:
-
-```bash
-# Download from Google Fonts
-wget https://github.com/googlefonts/spacemono/raw/main/fonts/ttf/SpaceMono-Regular.ttf \
-  -O kernel/SpaceMono-Regular.ttf
 ```
 
 ### Build & Run
@@ -178,15 +200,28 @@ theme reality           # Reality mode theme (default)
 theme dream             # Dream mode theme (purple)
 ```
 
+#### GUI Commands
+```bash
+gui                     # Launch desktop environment
+desktop                 # Same as gui
+graphics                # Graphics system demo
+```
+
 #### Filesystem Commands
 ```bash
 format                  # Format PsychicFS (WARNING: erases data)
 mount                   # Mount filesystem
+sync                    # Sync filesystem to disk
 ls                      # List files
 cat <filename>          # Display file contents
 write <file> <text>     # Write text to file
 touch <filename>        # Create empty file
 rm <filename>           # Delete file
+```
+
+#### SMP Commands
+```bash
+smp                     # Show SMP status and per-CPU info
 ```
 
 ---
@@ -247,22 +282,27 @@ timeline show         # Shows branch count
 ## 🐛 Known Issues & Limitations
 
 ### Current Limitations
-- **Single-core only**: No SMP support
 - **No userspace**: All code runs in ring 0 (kernel mode)
-- **Small files**: Max 8KB per file (8 blocks × 512 bytes)
+- **4KB max file size**: 8 blocks × 512 bytes per file
 - **Limited processes**: Max 256 processes
-- **No networking**: No network stack
-- **No ACPI**: Uses legacy PIC instead of APIC
+- **Basic networking**: TCP state machine stub only
+
+### Recently Implemented ✅
+- ✅ SMP Support (multi-core processing)
+- ✅ APIC/IOAPIC (modern interrupt handling)
+- ✅ Slab Allocator (O(1) kernel allocations)
+- ✅ VFS Layer (unified filesystem interface)
+- ✅ AstralScheduler (O(1) priority scheduling)
+- ✅ Double-buffered Compositor
+- ✅ Synchronization Primitives (Semaphore, Condvar, Barrier, Once)
+- ✅ Desktop GUI Environment
 
 ### Planned Features (Not Yet Implemented)
+- ❌ Userspace ring-3 execution
+- ❌ Full TCP/IP network stack
 - ❌ Self-rewriting kernel
 - ❌ Parallel-reality execution (only tracking)
-- ❌ Multiverse OS layer merging
-- ❌ Fractal memory (spatial allocation)
-- ❌ Psychic filesystem prediction (only tracking)
 - ❌ Dream-generated UI
-- ❌ Contextual runtime evolution
-- ❌ Capability-based security
 - ❌ AstralScript language
 
 ---
@@ -283,9 +323,11 @@ timeline show         # Shows branch count
 - **Notifications**: MMIO-based queue notifications
 - **PCI**: Full PCI configuration space parsing
 
-### Context Switching
-- **Naked Functions**: Direct assembly for zero overhead
-- **Register Preservation**: All GP registers + flags
+### Context Switching & Scheduling
+- **AstralScheduler**: O(1) dispatch using priority bitmap
+- **5 Priority Classes**: RealTime, Interactive, Normal, Background, Dream
+- **Intent-Aware**: Processes declare intent for scheduling optimization
+- **Per-CPU Queues**: Scalable scheduling for SMP
 - **Page Table Switching**: CR3 reload on context switch
 - **Stack Management**: Separate kernel stacks per process
 
@@ -294,55 +336,110 @@ timeline show         # Shows branch count
 ## 📁 Project Structure
 
 ```
-astral-os/
-├── kernel/
-│   ├── src/
-│   │   ├── main.rs              # Entry point
-│   │   ├── lib.rs               # Kernel library
-│   │   ├── util.rs              # Utility functions
-│   │   ├── memory/
-│   │   │   ├── mod.rs
-│   │   │   ├── frame.rs         # Physical allocator
-│   │   │   ├── paging.rs        # Page tables
-│   │   │   └── heap.rs          # Kernel heap
-│   │   ├── process/
-│   │   │   ├── mod.rs
-│   │   │   ├── scheduler.rs     # Scheduler
-│   │   │   └── context.rs       # Context switching
-│   │   ├── interrupts/
-│   │   │   ├── mod.rs
-│   │   │   ├── idt.rs           # IDT setup
-│   │   │   ├── pic.rs           # PIC driver
-│   │   │   └── handlers.rs      # Exception/IRQ handlers
-│   │   ├── drivers/
-│   │   │   ├── mod.rs
-│   │   │   ├── framebuffer.rs   # Fontdue rendering
-│   │   │   ├── serial.rs        # COM1 debug
-│   │   │   ├── keyboard.rs      # PS/2 keyboard
-│   │   │   └── virtio/
-│   │   │       ├── mod.rs
-│   │   │       ├── pci.rs       # PCI enumeration
-│   │   │       ├── queue.rs     # Virtqueue
-│   │   │       └── block.rs     # Block device
-│   │   ├── fs/
-│   │   │   ├── mod.rs
-│   │   │   └── psychicfs.rs     # Filesystem
-│   │   ├── reality/
-│   │   │   ├── mod.rs
-│   │   │   ├── causality.rs     # Causal tracking
-│   │   │   ├── dream.rs         # Dream state
-│   │   │   └── intent.rs        # Intent syscalls
-│   │   └── shell/
-│   │       ├── mod.rs
-│   │       └── commands.rs      # Shell commands
-│   ├── Cargo.toml
-│   ├── build.rs
-│   ├── x86_64-astral.json
-│   ├── linker.ld
-│   └── SpaceMono-Regular.ttf    # Required font
-├── Makefile
+  tree
+.
+Astral-OS/
+├── kernel
+│   ├── build.rs
+│   ├── Cargo.lock
+│   ├── Cargo.toml
+│   ├── linker.ld
+│   ├── src
+│   │   ├── acpi
+│   │   │   ├── madt.rs
+│   │   │   └── mod.rs
+│   │   ├── arch
+│   │   │   ├── mod.rs
+│   │   │   └── x86_64
+│   │   │       ├── apic.rs
+│   │   │       ├── ap_trampoline.s
+│   │   │       ├── cpu.rs
+│   │   │       ├── ioapic.rs
+│   │   │       ├── mod.rs
+│   │   │       └── smp.rs
+│   │   ├── display
+│   │   │   ├── mod.rs
+│   │   │   └── renderer.rs
+│   │   ├── drivers
+│   │   │   ├── framebuffer.rs
+│   │   │   ├── keyboard.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── serial.rs
+│   │   │   └── virtio
+│   │   │       ├── block.rs
+│   │   │       ├── mod.rs
+│   │   │       ├── net.rs
+│   │   │       ├── pci.rs
+│   │   │       └── queue.rs
+│   │   ├── fs
+│   │   │   ├── mod.rs
+│   │   │   ├── psychicfs.rs
+│   │   │   └── vfs.rs
+│   │   ├── graphics
+│   │   │   ├── compositor.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── protocol.rs
+│   │   │   └── surface.rs
+│   │   ├── gui
+│   │   │   ├── desktop.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── theme.rs
+│   │   │   └── window.rs
+│   │   ├── interrupts
+│   │   │   ├── handlers.rs
+│   │   │   ├── idt.rs
+│   │   │   ├── mod.rs
+│   │   │   └── pic.rs
+│   │   ├── lib.rs
+│   │   ├── main.rs
+│   │   ├── memory
+│   │   │   ├── fractal.rs
+│   │   │   ├── frame.rs
+│   │   │   ├── heap.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── paging.rs
+│   │   │   └── slab.rs
+│   │   ├── network
+│   │   │   ├── arp.rs
+│   │   │   ├── device.rs
+│   │   │   ├── ethernet.rs
+│   │   │   ├── ip.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── socket.rs
+│   │   │   ├── tcp.rs
+│   │   │   └── udp.rs
+│   │   ├── power
+│   │   │   └── mod.rs
+│   │   ├── process
+│   │   │   ├── context.rs
+│   │   │   ├── mod.rs
+│   │   │   └── scheduler.rs
+│   │   ├── reality
+│   │   │   ├── causality.rs
+│   │   │   ├── dream.rs
+│   │   │   ├── intent.rs
+│   │   │   └── mod.rs
+│   │   ├── security
+│   │   │   ├── capability.rs
+│   │   │   ├── intent.rs
+│   │   │   ├── mod.rs
+│   │   │   └── sandbox.rs
+│   │   ├── shell
+│   │   │   ├── commands.rs
+│   │   │   └── mod.rs
+│   │   ├── sync
+│   │   │   └── mod.rs
+│   │   ├── usermode
+│   │   │   ├── elf.rs
+│   │   │   ├── loader.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── syscall.rs
+│   │   │   └── test.rs
+│   │   └── util.rs
+│   └── x86_64-astral.json
 ├── limine.conf
-└── README.md
+├── Makefile
+└── Readme.md
 ```
 
 ---
@@ -379,8 +476,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## 📞 Contact
 
 **Project**: Astral OS  
-**Version**: 0.3.0  
-**Architecture**: x86_64  
+**Version**: 0.3.1  
+**Architecture**: x86_64 (SMP)  
 **Bootloader**: Limine v8.x
 
 For questions, issues, or contributions, please open an issue on GitHub.
