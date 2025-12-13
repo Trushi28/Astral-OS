@@ -38,6 +38,7 @@ pub fn execute(command: &str, mut args: core::str::SplitWhitespace, theme: &mut 
         "graphics" => cmd_graphics(theme),
         "net" => cmd_net(args, theme),
         "usertest" => cmd_usertest(theme),
+        "gui" | "desktop" => cmd_gui(theme),
         _ => {
             print_colored("Unknown command: ", theme.error_color);
             crate::println!("{}", command);
@@ -661,4 +662,23 @@ fn cmd_usertest(theme: &ShellTheme) {
             print_colored(&alloc::format!("Usermode test failed: {}\n", e), theme.error_color);
         }
     }
+}
+
+fn cmd_gui(theme: &ShellTheme) {
+    print_colored("Launching Desktop Environment...\n", theme.info_color);
+    crate::println!("  Press 'q' or ESC to exit");
+    crate::println!("  Press Tab to switch windows");
+    crate::println!("  Press 'c' to close focused window");
+    crate::println!();
+    
+    // Small delay to let user read
+    for _ in 0..1000000 {
+        unsafe { core::arch::asm!("nop"); }
+    }
+    
+    // Initialize and run GUI
+    crate::gui::init();
+    crate::gui::run();
+    
+    print_colored("Returned to shell\n", theme.success_color);
 }

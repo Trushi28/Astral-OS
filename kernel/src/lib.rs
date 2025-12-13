@@ -24,6 +24,8 @@ pub mod usermode;
 pub mod graphics;
 pub mod security;
 pub mod network;
+pub mod gui;
+pub mod display;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
