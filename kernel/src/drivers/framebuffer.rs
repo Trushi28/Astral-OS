@@ -395,6 +395,16 @@ pub fn print_colored(s: &str, color: u32) {
     }
 }
 
+pub fn print_char(c: char, color: u32) {
+    let mut fb = FB.lock();
+    if let Some(ref mut framebuffer) = *fb {
+        let old_fg = framebuffer.fg_color;
+        framebuffer.fg_color = color;
+        framebuffer.draw_char(c, color, framebuffer.bg_color);
+        framebuffer.fg_color = old_fg;
+    }
+}
+
 pub fn clear() {
     let mut fb = FB.lock();
     if let Some(ref mut framebuffer) = *fb {

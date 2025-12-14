@@ -604,6 +604,7 @@ extern "C" fn syscall_handler(
         crate::security::record_syscall(pid, syscall);
     }
     
-    // Dispatch to usermode syscall handler
-    crate::usermode::syscall::handle_syscall(syscall, arg1, arg2, arg3, arg4, arg5)
+    // The syscall handler in arch::x86_64::syscall already handles this
+    // Just return 0 as a placeholder - actual handling is in ring3_syscall_handler
+    0
 }

@@ -45,12 +45,14 @@ impl PageTableEntry {
     
     #[inline]
     pub fn set_address(&mut self, addr: u64, flags: u64) {
-        self.0 = (addr & 0x000F_FFFF_FFFF_F000) | flags;
+        // Combine physical address with flags, including high bits (NX at bit 63)
+        self.0 = (addr & 0x000F_FFFF_FFFF_F000) | (flags & 0xFFF) | (flags & Self::NO_EXECUTE);
     }
     
     #[inline]
     pub fn flags(self) -> u64 {
-        self.0 & 0xFFF
+        // Return both low flags and NX bit
+        (self.0 & 0xFFF) | (self.0 & Self::NO_EXECUTE)
     }
 }
 
@@ -221,6 +223,83 @@ impl PageTableManager {
         }
         
         entry.set_address(phys.as_u64(), flags);
+        
+        // Flush TLB
+        unsafe {
+            asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+        }
+        
+        Ok(())
+    }
+    
+    /// Map an executable page - clears NX at all levels
+    pub fn map_executable(&mut self, virt: VirtAddr, phys: PhysAddr, flags: u64) -> Result<(), &'static str> {
+        let p4_index = virt.p4_index();
+        let p3_index = virt.p3_index();
+        let p2_index = virt.p2_index();
+        let p1_index = virt.p1_index();
+        
+        let hhdm = crate::get_hhdm_offset();
+        
+        // Flags for intermediate entries: Present + Writable + User, NO NX
+        let inter_flags = PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::USER;
+        
+        // Get or create P3 - force clear NX
+        let p3_entry = &mut self.p4_table.entries[p4_index];
+        let p3_phys = if p3_entry.is_present() {
+            let addr = p3_entry.physical_address();
+            // Force clear NX bit on existing entry
+            p3_entry.set_address(addr, inter_flags);
+            addr
+        } else {
+            let frame = allocate_frame().ok_or("Out of memory")?;
+            let ptr = frame.to_virt() as *mut PageTable;
+            unsafe { (*ptr).zero(); }
+            let phys = frame.as_u64();
+            p3_entry.set_address(phys, inter_flags);
+            phys
+        };
+        
+        let p3 = unsafe { &mut *((p3_phys as usize + hhdm) as *mut PageTable) };
+        
+        // Get or create P2 - force clear NX
+        let p2_entry = &mut p3.entries[p3_index];
+        let p2_phys = if p2_entry.is_present() {
+            let addr = p2_entry.physical_address();
+            p2_entry.set_address(addr, inter_flags);
+            addr
+        } else {
+            let frame = allocate_frame().ok_or("Out of memory")?;
+            let ptr = frame.to_virt() as *mut PageTable;
+            unsafe { (*ptr).zero(); }
+            let phys = frame.as_u64();
+            p2_entry.set_address(phys, inter_flags);
+            phys
+        };
+        
+        let p2 = unsafe { &mut *((p2_phys as usize + hhdm) as *mut PageTable) };
+        
+        // Get or create P1 - force clear NX
+        let p1_entry = &mut p2.entries[p2_index];
+        let p1_phys = if p1_entry.is_present() {
+            let addr = p1_entry.physical_address();
+            p1_entry.set_address(addr, inter_flags);
+            addr
+        } else {
+            let frame = allocate_frame().ok_or("Out of memory")?;
+            let ptr = frame.to_virt() as *mut PageTable;
+            unsafe { (*ptr).zero(); }
+            let phys = frame.as_u64();
+            p1_entry.set_address(phys, inter_flags);
+            phys
+        };
+        
+        let p1 = unsafe { &mut *((p1_phys as usize + hhdm) as *mut PageTable) };
+        
+        // Map the page - explicitly no NX
+        let entry = &mut p1.entries[p1_index];
+        // Force overwrite even if present
+        entry.set_address(phys.as_u64(), flags & !PageTableEntry::NO_EXECUTE);
         
         // Flush TLB
         unsafe {

@@ -659,16 +659,8 @@ fn cmd_net(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
 }
 
 fn cmd_usertest(theme: &ShellTheme) {
-    print_colored("Running usermode test...\n", theme.info_color);
-    
-    match crate::usermode::test::run_test_program() {
-        Ok(()) => {
-            print_colored("Usermode test completed!\n", theme.success_color);
-        }
-        Err(e) => {
-            print_colored(&alloc::format!("Usermode test failed: {}\n", e), theme.error_color);
-        }
-    }
+    print_colored("Launching Ring 3 user shell...\n", theme.info_color);
+    crate::usermode::launcher::launch_user_shell();
 }
 
 fn cmd_gui(theme: &ShellTheme) {

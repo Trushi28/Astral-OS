@@ -119,21 +119,51 @@ fn triple_fault() -> ! {
 }
 
 /// Keyboard controller reboot
-fn keyboard_reboot() -> ! {
+fn keyboard_reboot() {
     unsafe {
-        // Pulse reset line via keyboard controller
+        // Disable interrupts
+        asm!("cli", options(nostack, nomem));
+        
+        // Clear all keyboard buffers
+        loop {
+            let status = crate::util::inb(0x64);
+            if status & 0x01 != 0 {
+                let _ = crate::util::inb(0x60); // discard data
+            } else {
+                break;
+            }
+        }
+        
+        // Wait for keyboard controller ready
+        for _ in 0..10000 {
+            if crate::util::inb(0x64) & 0x02 == 0 {
+                break;
+            }
+            asm!("pause", options(nostack, nomem));
+        }
+        
+        // Send reset command
+        crate::util::outb(0x64, 0xFE);
+        
+        // Wait for reset
+        for _ in 0..100000 {
+            asm!("pause", options(nostack, nomem));
+        }
+    }
+}
+
+/// Triple fault reset (guaranteed to work)
+fn triple_fault_reset() -> ! {
+    unsafe {
+        // Create invalid IDT
+        let invalid_idt: u64 = 0;
         asm!(
-            "2:",
-            "in al, 0x64",
-            "test al, 0x02",
-            "jnz 2b",
-            "mov al, 0xFE",
-            "out 0x64, al",
-            "3:",
-            "hlt",
-            "jmp 3b",
-            options(nostack, noreturn)
+            "lidt [{}]",
+            in(reg) &invalid_idt,
+            options(nostack)
         );
+        // Trigger interrupt with invalid IDT = triple fault
+        asm!("int3", options(nostack, noreturn));
     }
 }
 
@@ -174,9 +204,15 @@ pub fn set_power_state(state: PowerState) -> ! {
             crate::fs::fs_sync();
             
             crate::println!("Filesystem synced");
+            crate::println!("Attempting keyboard reset...");
             
-            // Try keyboard controller reboot
-            keyboard_reboot()
+            // Try keyboard controller reboot first
+            keyboard_reboot();
+            
+            crate::println!("Keyboard reset failed, triple fault...");
+            
+            // If keyboard reset didn't work, triple fault
+            triple_fault_reset()
         }
         
         PowerState::Suspend => {

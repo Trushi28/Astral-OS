@@ -285,16 +285,52 @@ pub extern "C" fn _start() -> ! {
     println!("[11/11] Network stack...");
 
     crate::network::init();
-    serial_println(b"[12/12] Starting interactive shell...");
     
-    // Start shell
-    let mut shell = shell::Shell::new();
-    shell.run();
-
-    // Should never reach here
-    serial_println(b"[FATAL] Shell exited unexpectedly!");
+    // Initialize Ring 3 user-mode support (TSS, GDT, syscalls)
+    serial_println(b"[12/14] Initializing Ring 3 support...");
+    println!("[12/14] Ring 3 user-mode...");
+    crate::arch::x86_64::usermode::init();
+    
+    // Initialize authentication system
+    serial_println(b"[13/14] Initializing authentication...");
+    println!("[13/14] Authentication system...");
+    crate::auth::users::init();
+    
+    // Brief delay to show boot messages
+    for _ in 0..5000000 { unsafe { core::arch::asm!("nop"); } }
+    
+    // Show login screen
+    serial_println(b"[BOOT] Starting login...");
+    if !crate::auth::show_login() {
+        serial_println(b"[FATAL] Login failed!");
+        loop { unsafe { core::arch::asm!("cli", "hlt"); } }
+    }
+    
+    // Main session loop - exit from any mode returns to menu
     loop {
-        unsafe { core::arch::asm!("cli", "hlt", options(nostack, nomem)); }
+        // Show boot menu and get selection
+        let selection = crate::boot::show_menu();
+        
+        // Execute selected option
+        match selection {
+            crate::boot::BootOption::Shell => {
+                serial_println(b"[BOOT] Starting Ring 3 user shell...");
+                crate::usermode::launcher::launch_user_shell();
+            }
+            crate::boot::BootOption::Graphics => {
+                serial_println(b"[BOOT] Starting GUI...");
+                gui::run();
+                // GUI exited (pressed Q), return to menu
+            }
+            crate::boot::BootOption::KShell => {
+                serial_println(b"[BOOT] Starting kernel shell (root access)...");
+                let mut shell = shell::Shell::new();
+                shell.run();
+                // Shell exited, return to menu
+            }
+        }
+        
+        serial_println(b"[BOOT] Session ended, returning to menu...");
     }
 }
 

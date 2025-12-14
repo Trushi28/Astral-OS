@@ -28,6 +28,8 @@ pub mod gui;
 pub mod display;
 pub mod ipc;
 pub mod apps;
+pub mod auth;
+pub mod boot;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
