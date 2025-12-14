@@ -189,18 +189,19 @@ pub fn run() {
             }
         }
         
-        // Only render when something changed to reduce flickering
-        let should_render = mouse_moved || (mouse_pressed != last_mouse_pressed);
+        // Redraw on click/release or keyboard input
+        // Mouse movement also triggers redraw (will optimize later with dirty rects)
+        let needs_redraw = mouse_moved || (mouse_pressed != last_mouse_pressed);
         
-        if should_render {
+        if needs_redraw {
             display::renderer::render_frame();
         }
         
-        // Small yield to allow interrupts - ensure interrupts are enabled
+        // Yield to interrupts
         unsafe { 
             core::arch::asm!(
-                "sti",  // Enable interrupts
-                "hlt",  // Wait for interrupt
+                "sti",
+                "hlt",
                 options(nomem, nostack)
             ); 
         }
