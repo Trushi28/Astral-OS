@@ -24,6 +24,7 @@ bitflags = "2.4"
 panic = "abort"
 opt-level = 2
 overflow-checks = true
+debug=false
 
 [profile.release]
 panic = "abort"
