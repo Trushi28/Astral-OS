@@ -26,6 +26,8 @@ pub mod security;
 pub mod network;
 pub mod gui;
 pub mod display;
+pub mod ipc;
+pub mod apps;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

@@ -39,6 +39,7 @@ pub fn execute(command: &str, mut args: core::str::SplitWhitespace, theme: &mut 
         "net" => cmd_net(args, theme),
         "usertest" => cmd_usertest(theme),
         "gui" | "desktop" => cmd_gui(theme),
+        "editor" | "edit" => cmd_editor(args, theme),
         _ => {
             print_colored("Unknown command: ", theme.error_color);
             crate::println!("{}", command);
@@ -85,6 +86,9 @@ fn cmd_help(theme: &ShellTheme) {
     crate::println!("  touch <f> - Create file");
     crate::println!("  rm <f>   - Delete file");
     crate::println!();
+    print_colored("Applications:\n", theme.info_color);
+    crate::println!("  gui      - Launch desktop GUI");
+    crate::println!("  editor <f> - Text editor (vim-like)");
     crate::println!("  smp      - SMP status");
     crate::println!("  security  - Security status");
     crate::println!("  graphics  - Graphics server info");
@@ -681,4 +685,16 @@ fn cmd_gui(theme: &ShellTheme) {
     crate::gui::run();
     
     print_colored("Returned to shell\n", theme.success_color);
+}
+
+fn cmd_editor(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
+    let filename = args.next();
+    
+    print_colored("Astral Text Editor\n", theme.info_color);
+    crate::println!("  Vim-like keys: i=insert, x=delete, :w=save, :q=quit");
+    crate::println!();
+    
+    crate::apps::editor::run_cli(filename);
+    
+    print_colored("Editor closed\n", theme.success_color);
 }

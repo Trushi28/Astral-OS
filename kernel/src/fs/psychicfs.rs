@@ -6,21 +6,68 @@ use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const FS_MAGIC: u32 = 0x50535946; // "PSYF"
-const FS_VERSION: u16 = 2; // Bumped version for new format
+const FS_VERSION: u16 = 3; // Version 3: extent-based
 const SUPERBLOCK_SECTOR: u64 = 0;
 const INODE_TABLE_START: u64 = 1;
 const INODE_TABLE_SECTORS: u64 = 64;
 const BITMAP_SECTOR: u64 = 65;
 const DATA_BLOCKS_START: u64 = 128;
 
-const MAX_FILENAME_LEN: usize = 56;
+const MAX_FILENAME_LEN: usize = 48;  // Reduced to fit extents
 const MAX_FILES: usize = 256;
 const BLOCK_SIZE: usize = 512;
-const MAX_FILE_BLOCKS: usize = 8; // Keep at 8 to fit inode in 128 bytes (4KB max file size)
+
+// Extent-based allocation
+const INLINE_EXTENTS: usize = 4;     // 4 inline extents in inode
+const EXTENTS_PER_BLOCK: usize = 64; // 512 bytes / 8 bytes per extent
+// Max: 4 inline + 64 indirect = 68 extents
+// Each extent: up to 65535 contiguous blocks
+// Theoretical max: 68 * 65535 * 512 bytes = ~2.1 GB
+// Practical max: disk size (67 MB)
+
+// Extent flags
+const EXTENT_ALLOCATED: u16 = 0x0001;
+const EXTENT_HOLE: u16 = 0x0002;      // Sparse file hole
+const EXTENT_PREALLOC: u16 = 0x0004;  // Preallocated, not yet written
 
 // Cache configuration
-const CACHE_SIZE: usize = 32; // Number of cached blocks
-const CACHE_WRITEBACK_INTERVAL: u64 = 100; // Ticks between writebacks
+const CACHE_SIZE: usize = 32;
+const CACHE_WRITEBACK_INTERVAL: u64 = 100;
+
+/// Extent: describes a contiguous range of blocks
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Extent {
+    pub logical_block: u16,   // Logical offset in file (in blocks)
+    pub physical_block: u32,  // Physical disk block number
+    pub count: u16,           // Number of contiguous blocks (0 = unused)
+}
+
+impl Extent {
+    pub const fn empty() -> Self {
+        Self { logical_block: 0, physical_block: 0, count: 0 }
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    
+    /// Check if logical block falls within this extent
+    pub fn contains(&self, logical: u16) -> bool {
+        !self.is_empty() && 
+        logical >= self.logical_block && 
+        logical < self.logical_block + self.count
+    }
+    
+    /// Get physical block for a logical block within this extent
+    pub fn translate(&self, logical: u16) -> Option<u32> {
+        if self.contains(logical) {
+            Some(self.physical_block + (logical - self.logical_block) as u32)
+        } else {
+            None
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -37,17 +84,29 @@ pub struct Superblock {
     pub _reserved: [u8; 485],
 }
 
+/// Inode with extent-based allocation (128 bytes)
+/// Layout: 1+1+2+4+8+8 = 24 bytes header
+///         4*8 = 32 bytes inline extents
+///         4 bytes extent indirect pointer
+///         2 bytes last_extent_idx (append fast path)
+///         2 bytes reserved
+///         48 bytes name
+///         1+7 = 8 bytes dirty + reserved
+///         Total = 24+32+4+2+2+48+8 = 120 bytes (8 bytes spare)
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Inode {
     pub in_use: u8,
     pub file_type: u8,
     pub permissions: u16,
-    pub size: u32,
+    pub size: u32,                         // File size in bytes
     pub created_time: u64,
     pub modified_time: u64,
-    pub blocks: [u32; MAX_FILE_BLOCKS],
-    pub name: [u8; MAX_FILENAME_LEN],
+    pub extents: [Extent; INLINE_EXTENTS], // 4 inline extents (32 bytes)
+    pub extent_indirect: u32,              // Indirect extent block pointer
+    pub last_extent_idx: u16,              // Last used extent (append fast path)
+    pub extent_count: u16,                 // Total extents used
+    pub name: [u8; MAX_FILENAME_LEN],      // 48 bytes
     pub dirty: u8,
     pub _reserved: [u8; 7],
 }
@@ -61,7 +120,10 @@ impl Inode {
             size: 0,
             created_time: 0,
             modified_time: 0,
-            blocks: [0; MAX_FILE_BLOCKS],
+            extents: [Extent::empty(); INLINE_EXTENTS],
+            extent_indirect: 0,
+            last_extent_idx: 0,
+            extent_count: 0,
             name: [0; MAX_FILENAME_LEN],
             dirty: 0,
             _reserved: [0; 7],
@@ -79,6 +141,75 @@ impl Inode {
         let len = bytes.len().min(MAX_FILENAME_LEN - 1);
         self.name[..len].copy_from_slice(&bytes[..len]);
         self.name[len] = 0;
+    }
+    
+    /// Get physical block for a logical block number
+    pub fn get_physical_block(&self, logical: u16) -> Option<u32> {
+        // Check inline extents first
+        for ext in &self.extents {
+            if let Some(phys) = ext.translate(logical) {
+                return Some(phys);
+            }
+        }
+        // Would check indirect extents here if extent_indirect != 0
+        None
+    }
+    
+    /// Add a new extent (append fast path)
+    pub fn add_extent(&mut self, physical_start: u32, count: u16) -> bool {
+        // Find logical position
+        let logical_start = if self.extent_count == 0 {
+            0u16
+        } else {
+            // Get end of last extent
+            let last_idx = self.last_extent_idx as usize;
+            if last_idx < INLINE_EXTENTS {
+                let last = &self.extents[last_idx];
+                last.logical_block + last.count
+            } else {
+                return false; // Would need indirect
+            }
+        };
+        
+        // Try to extend last extent if contiguous
+        if self.extent_count > 0 {
+            let last_idx = self.last_extent_idx as usize;
+            if last_idx < INLINE_EXTENTS {
+                let last = &mut self.extents[last_idx];
+                if last.physical_block + last.count as u32 == physical_start {
+                    // Contiguous - extend in place
+                    last.count += count;
+                    return true;
+                }
+            }
+        }
+        
+        // Find free inline extent slot
+        for (i, ext) in self.extents.iter_mut().enumerate() {
+            if ext.is_empty() {
+                *ext = Extent {
+                    logical_block: logical_start,
+                    physical_block: physical_start,
+                    count,
+                };
+                self.last_extent_idx = i as u16;
+                self.extent_count += 1;
+                return true;
+            }
+        }
+        
+        // Would allocate indirect extent block here
+        false
+    }
+    
+    /// Clear all extents
+    pub fn clear_extents(&mut self) {
+        for ext in &mut self.extents {
+            *ext = Extent::empty();
+        }
+        self.extent_indirect = 0;
+        self.last_extent_idx = 0;
+        self.extent_count = 0;
     }
 }
 
@@ -700,9 +831,14 @@ fn free_block(block_num: u32) {
             
             // Sync after every free (safety over performance)
             pfs.sync();
-            
-            crate::serial_println!("[FS] Freed block {} (synced)", block_num);
         }
+    }
+}
+
+/// Free a contiguous range of blocks
+fn free_block_range(start: u32, count: u16) {
+    for i in 0..count as u32 {
+        free_block(start + i);
     }
 }
 
@@ -736,114 +872,148 @@ pub fn fs_create(name: &str) -> bool {
     write_inode(inode_num, &inode)
 }
 
-pub fn fs_write(name: &str, data: &[u8]) -> bool {
-    crate::serial_println!("[FS] Writing {} bytes to '{}'", data.len(), name);
+/// Find contiguous free blocks for extent allocation
+fn find_contiguous_blocks(count: usize) -> Option<u32> {
+    let mut fs = PSYCHIC_FS.lock();
+    let pfs = fs.as_mut()?;
     
+    let mut run_start = 0u32;
+    let mut run_len = 0usize;
+    
+    // Scan bitmap for contiguous free blocks
+    for block in DATA_BLOCKS_START as u32..pfs.superblock.total_blocks {
+        if !pfs.is_block_allocated(block) {
+            if run_len == 0 {
+                run_start = block;
+            }
+            run_len += 1;
+            if run_len >= count {
+                return Some(run_start);
+            }
+        } else {
+            run_len = 0;
+        }
+    }
+    
+    // Try single-block allocations if no contiguous run found
+    if count == 1 {
+        for block in DATA_BLOCKS_START as u32..pfs.superblock.total_blocks {
+            if !pfs.is_block_allocated(block) {
+                return Some(block);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Allocate contiguous blocks and mark them as used
+fn allocate_contiguous_blocks(start: u32, count: u16) -> bool {
+    let mut fs = PSYCHIC_FS.lock();
+    if let Some(pfs) = fs.as_mut() {
+        for i in 0..count as u32 {
+            let block = start + i;
+            let byte_idx = (block / 8) as usize;
+            let bit_idx = block % 8;
+            if byte_idx < pfs.block_bitmap.len() {
+                pfs.block_bitmap[byte_idx] |= 1 << bit_idx;
+            }
+        }
+        pfs.superblock.free_blocks = pfs.superblock.free_blocks.saturating_sub(count as u32);
+        true
+    } else {
+        false
+    }
+}
+
+pub fn fs_write(name: &str, data: &[u8]) -> bool {
     let (inode_num, mut inode) = match find_inode_by_name(name) {
-        Some(i) => {
-            crate::serial_println!("[FS] Found existing file at inode {}", i.0);
-            i
-        },
+        Some(i) => i,
         None => {
-            crate::serial_println!("[FS] File not found, creating...");
             if !fs_create(name) {
-                crate::serial_println!("[FS] Failed to create file");
                 return false;
             }
             match find_inode_by_name(name) {
-                Some(i) => {
-                    crate::serial_println!("[FS] Created at inode {}", i.0);
-                    i
-                },
-                None => {
-                    crate::serial_println!("[FS] Critical error: file disappeared after creation");
-                    return false;
-                }
+                Some(i) => i,
+                None => return false,
             }
         }
     };
     
     let blocks_needed = (data.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    crate::serial_println!("[FS] Need {} blocks", blocks_needed);
-    
-    if blocks_needed > MAX_FILE_BLOCKS {
-        crate::serial_println!("[FS] File too large: need {} blocks, max is {}", 
-            blocks_needed, MAX_FILE_BLOCKS);
-        return false;
+    if blocks_needed == 0 {
+        inode.size = 0;
+        inode.clear_extents();
+        return write_inode(inode_num, &inode);
     }
     
-    // Free excess blocks
-    for i in blocks_needed..MAX_FILE_BLOCKS {
-        let block = inode.blocks[i];
-        if block != 0 {
-            crate::serial_println!("[FS] Freeing excess block {}", block);
-            free_block(block);
-            inode.blocks[i] = 0;
+    // Clear existing extents for overwrite
+    // Free old blocks first
+    for ext in &inode.extents {
+        if !ext.is_empty() {
+            free_block_range(ext.physical_block, ext.count);
         }
     }
+    inode.clear_extents();
     
-    // Allocate and write blocks
-    for i in 0..blocks_needed {
-        let block = if inode.blocks[i] != 0 {
-            crate::serial_println!("[FS] Reusing block {} for chunk {}", inode.blocks[i], i);
-            inode.blocks[i]
-        } else {
-            match allocate_block() {
-                Some(b) => {
-                    crate::serial_println!("[FS] Allocated new block {} for chunk {}", b, i);
-                    inode.blocks[i] = b;
-                    b
-                }
-                None => {
-                    crate::serial_println!("[FS] FATAL: Failed to allocate block {} of {}", i, blocks_needed);
-                    
-                    // Cleanup: free any blocks we allocated
-                    for j in 0..i {
-                        if inode.blocks[j] != 0 {
-                            free_block(inode.blocks[j]);
-                            inode.blocks[j] = 0;
-                        }
-                    }
+    // Try to allocate contiguous blocks for the entire file
+    let mut blocks_allocated = 0;
+    while blocks_allocated < blocks_needed {
+        let remaining = blocks_needed - blocks_allocated;
+        let chunk_size = remaining.min(65535); // Max extent size
+        
+        // Find contiguous run
+        if let Some(start_block) = find_contiguous_blocks(chunk_size) {
+            // Allocate and add extent
+            allocate_contiguous_blocks(start_block, chunk_size as u16);
+            if !inode.add_extent(start_block, chunk_size as u16) {
+                return false; // Out of extent slots
+            }
+            blocks_allocated += chunk_size;
+        } else if chunk_size > 1 {
+            // Try smaller chunks
+            if let Some(start_block) = find_contiguous_blocks(1) {
+                allocate_contiguous_blocks(start_block, 1);
+                if !inode.add_extent(start_block, 1) {
                     return false;
                 }
+                blocks_allocated += 1;
+            } else {
+                return false; // Out of disk space
             }
-        };
-        
-        let start = i * BLOCK_SIZE;
-        let end = ((i + 1) * BLOCK_SIZE).min(data.len());
-        
-        let mut buffer = [0u8; 512];
-        buffer[..end - start].copy_from_slice(&data[start..end]);
-        
-        if !disk_write_sector(block as u64, &buffer) {
-            crate::serial_println!("[FS] Failed to write block {}", block);
+        } else {
+            return false; // Out of disk space
+        }
+    }
+    
+    // Write data to allocated blocks
+    let mut written = 0;
+    for logical_block in 0..blocks_needed {
+        if let Some(phys_block) = inode.get_physical_block(logical_block as u16) {
+            let start = logical_block * BLOCK_SIZE;
+            let end = (start + BLOCK_SIZE).min(data.len());
+            
+            let mut buffer = [0u8; 512];
+            buffer[..end - start].copy_from_slice(&data[start..end]);
+            
+            if !disk_write_sector(phys_block as u64, &buffer) {
+                return false;
+            }
+            written += 1;
+        } else {
             return false;
         }
-        
-        crate::serial_println!("[FS] Wrote {} bytes to block {}", end - start, block);
     }
     
     inode.size = data.len() as u32;
     inode.modified_time = crate::get_timestamp();
     inode.dirty = 1;
     
-    crate::serial_println!("[FS] Updating inode {} with size {}", inode_num, inode.size);
-    
-    let success = write_inode(inode_num, &inode);
-    
-    if success {
-        // Immediately sync to disk
-        fs_sync();
-        crate::serial_println!("[FS] Write complete and synced");
-    } else {
-        crate::serial_println!("[FS] Failed to update inode");
-    }
-    
-    success
+    write_inode(inode_num, &inode) && { fs_sync(); true }
 }
 
 pub fn fs_read(name: &str) -> Option<Vec<u8>> {
-    let (inode_num, inode) = find_inode_by_name(name)?;
+    let (_inode_num, inode) = find_inode_by_name(name)?;
     
     let size = inode.size;
     if size == 0 {
@@ -853,20 +1023,23 @@ pub fn fs_read(name: &str) -> Option<Vec<u8>> {
     let mut data = Vec::with_capacity(size as usize);
     let blocks_needed = (size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
     
-    for i in 0..blocks_needed {
-        let block = inode.blocks[i];
-        if block == 0 {
-            break;
+    for logical_block in 0..blocks_needed {
+        // Translate logical block to physical using extents
+        if let Some(phys_block) = inode.get_physical_block(logical_block as u16) {
+            let mut buffer = [0u8; 512];
+            if !disk_read_sector(phys_block as u64, &mut buffer) {
+                return None;
+            }
+            
+            let remaining = size as usize - data.len();
+            let to_read = remaining.min(BLOCK_SIZE);
+            data.extend_from_slice(&buffer[..to_read]);
+        } else {
+            // Sparse file hole - return zeros
+            let remaining = size as usize - data.len();
+            let to_read = remaining.min(BLOCK_SIZE);
+            data.extend((0..to_read).map(|_| 0u8));
         }
-        
-        let mut buffer = [0u8; 512];
-        if !disk_read_sector(block as u64, &mut buffer) {
-            return None;
-        }
-        
-        let remaining = size as usize - data.len();
-        let to_read = remaining.min(BLOCK_SIZE);
-        data.extend_from_slice(&buffer[..to_read]);
     }
     
     Some(data)
@@ -878,14 +1051,20 @@ pub fn fs_delete(name: &str) -> bool {
         None => return false,
     };
     
-    for i in 0..MAX_FILE_BLOCKS {
-        let block = inode.blocks[i];
-        if block != 0 {
-            free_block(block);
-            inode.blocks[i] = 0;
+    // Free all extent blocks
+    for ext in &inode.extents {
+        if !ext.is_empty() {
+            free_block_range(ext.physical_block, ext.count);
         }
     }
     
+    // Free indirect extent block if present
+    if inode.extent_indirect != 0 {
+        // Would read indirect extent block and free all referenced blocks
+        free_block(inode.extent_indirect);
+    }
+    
+    inode.clear_extents();
     inode.in_use = 0;
     inode.size = 0;
     

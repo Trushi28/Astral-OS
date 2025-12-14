@@ -277,6 +277,9 @@ struct MountPoint {
     fs_id: usize,
 }
 
+/// Maximum path cache entries before LRU eviction
+const MAX_PATH_CACHE_SIZE: usize = 256;
+
 /// Virtual Filesystem Manager
 pub struct VfsManager {
     /// Mount points sorted by path length (longest first for lookup)
@@ -285,6 +288,8 @@ pub struct VfsManager {
     next_fs_id: AtomicU64,
     /// Path resolution cache
     path_cache: RwLock<BTreeMap<String, (usize, String)>>,
+    /// LRU order for cache eviction (most recent at end)
+    cache_lru: RwLock<Vec<String>>,
 }
 
 impl VfsManager {
@@ -293,6 +298,7 @@ impl VfsManager {
             mounts: RwLock::new(Vec::new()),
             next_fs_id: AtomicU64::new(1),
             path_cache: RwLock::new(BTreeMap::new()),
+            cache_lru: RwLock::new(Vec::new()),
         }
     }
     
@@ -317,8 +323,9 @@ impl VfsManager {
         // Sort by path length (longest first) for proper lookup
         mounts.sort_by(|a, b| b.path.len().cmp(&a.path.len()));
         
-        // Clear path cache
+        // Clear path cache and LRU
         self.path_cache.write().clear();
+        self.cache_lru.write().clear();
         
         Ok(())
     }
@@ -333,6 +340,7 @@ impl VfsManager {
             let mut mount = mounts.remove(pos);
             mount.fs.unmount()?;
             self.path_cache.write().clear();
+            self.cache_lru.write().clear();
             Ok(())
         } else {
             Err(VfsError::NotMounted)
@@ -346,6 +354,12 @@ impl VfsManager {
         // Check cache first
         if let Some(cached) = self.path_cache.read().get(&normalized) {
             let result: (usize, String) = cached.clone();
+            // Update LRU order (move to end)
+            let mut lru = self.cache_lru.write();
+            if let Some(pos) = lru.iter().position(|p| p == &normalized) {
+                lru.remove(pos);
+            }
+            lru.push(normalized);
             return Ok(result);
         }
         
@@ -361,9 +375,9 @@ impl VfsManager {
                 
                 let result = (mount.fs_id, relative);
                 
-                // Cache the result
+                // Cache the result with LRU tracking
                 drop(mounts);
-                self.path_cache.write().insert(normalized, result.clone());
+                self.cache_insert(normalized, result.clone());
                 
                 return Ok(result);
             }
@@ -375,12 +389,32 @@ impl VfsManager {
                 let norm_clone = normalized.clone();
                 let result = (mount.fs_id, normalized);
                 drop(mounts);
-                self.path_cache.write().insert(norm_clone, result.clone());
+                self.cache_insert(norm_clone, result.clone());
                 return Ok(result);
             }
         }
         
         Err(VfsError::NotMounted)
+    }
+    
+    /// Insert into cache with LRU eviction
+    fn cache_insert(&self, path: String, value: (usize, String)) {
+        let mut cache = self.path_cache.write();
+        let mut lru = self.cache_lru.write();
+        
+        // Evict oldest entries if at capacity
+        while lru.len() >= MAX_PATH_CACHE_SIZE {
+            if let Some(oldest) = lru.first().cloned() {
+                cache.remove(&oldest);
+                lru.remove(0);
+            } else {
+                break;
+            }
+        }
+        
+        // Insert new entry
+        cache.insert(path.clone(), value);
+        lru.push(path);
     }
     
     /// Get filesystem by ID

@@ -250,14 +250,68 @@ impl SizeClassCache {
         // Object not found - may already be freed or corrupted
     }
     
-    fn move_to_full(&self, _slab: *mut Slab) {
-        // Simplified: just leave in partial for now
-        // Full implementation would move between lists
+    /// Move slab from partial to full list
+    fn move_to_full(&self, slab: *mut Slab) {
+        // Remove from partial list
+        let mut prev: *mut Slab = core::ptr::null_mut();
+        let mut current = self.partial_slabs.load(Ordering::Acquire);
+        
+        while !current.is_null() {
+            if current == slab {
+                unsafe {
+                    let next = (*slab).next.load(Ordering::Acquire);
+                    
+                    if prev.is_null() {
+                        // Head of list
+                        self.partial_slabs.store(next, Ordering::Release);
+                    } else {
+                        (*prev).next.store(next, Ordering::Release);
+                    }
+                    
+                    // Add to full list head
+                    (*slab).next.store(
+                        self.full_slabs.load(Ordering::Relaxed),
+                        Ordering::Relaxed
+                    );
+                    self.full_slabs.store(slab, Ordering::Release);
+                }
+                return;
+            }
+            prev = current;
+            current = unsafe { (*current).next.load(Ordering::Acquire) };
+        }
     }
     
-    fn move_to_partial(&self, _slab: *mut Slab) {
-        // Simplified: just leave in full for now
-        // Full implementation would move between lists
+    /// Move slab from full to partial list
+    fn move_to_partial(&self, slab: *mut Slab) {
+        // Remove from full list
+        let mut prev: *mut Slab = core::ptr::null_mut();
+        let mut current = self.full_slabs.load(Ordering::Acquire);
+        
+        while !current.is_null() {
+            if current == slab {
+                unsafe {
+                    let next = (*slab).next.load(Ordering::Acquire);
+                    
+                    if prev.is_null() {
+                        // Head of list
+                        self.full_slabs.store(next, Ordering::Release);
+                    } else {
+                        (*prev).next.store(next, Ordering::Release);
+                    }
+                    
+                    // Add to partial list head
+                    (*slab).next.store(
+                        self.partial_slabs.load(Ordering::Relaxed),
+                        Ordering::Relaxed
+                    );
+                    self.partial_slabs.store(slab, Ordering::Release);
+                }
+                return;
+            }
+            prev = current;
+            current = unsafe { (*current).next.load(Ordering::Acquire) };
+        }
     }
     
     pub fn stats(&self) -> (usize, usize) {

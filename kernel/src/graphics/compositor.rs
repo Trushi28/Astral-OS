@@ -210,26 +210,56 @@ impl Compositor {
             self.framebuffer
         };
         
+        // Calculate clipping
+        let start_x = surface.x.max(0) as usize;
+        let start_y = surface.y.max(0) as usize;
+        let end_x = (surface.x + surface.width as i32).min(self.width as i32) as usize;
+        let end_y = (surface.y + surface.height as i32).min(self.height as i32) as usize;
+        
+        if start_x >= end_x || start_y >= end_y {
+            return; // Completely clipped
+        }
+        
+        let src_offset_x = if surface.x < 0 { (-surface.x) as usize } else { 0 };
+        let src_offset_y = if surface.y < 0 { (-surface.y) as usize } else { 0 };
+        
+        let copy_width = end_x - start_x;
+        let copy_height = end_y - start_y;
         let bytes_per_pixel = surface.format.bytes_per_pixel();
         
-        for y in 0..surface.height as i32 {
-            let screen_y = surface.y + y;
-            
-            if screen_y < 0 || screen_y >= self.height as i32 {
-                continue;
-            }
-            
-            for x in 0..surface.width as i32 {
-                let screen_x = surface.x + x;
+        // Fast path: opaque RGB888 surfaces - use bulk copy
+        if matches!(surface.format, PixelFormat::RGB888) {
+            for row in 0..copy_height {
+                let src_y = src_offset_y + row;
+                let dst_y = start_y + row;
                 
-                if screen_x < 0 || screen_x >= self.width as i32 {
-                    continue;
+                for col in 0..copy_width {
+                    let src_x = src_offset_x + col;
+                    let src_offset = (src_y * surface.width as usize + src_x) * bytes_per_pixel;
+                    let dst_offset = dst_y * self.width + start_x + col;
+                    
+                    let r = surface.pixels[src_offset] as u32;
+                    let g = surface.pixels[src_offset + 1] as u32;
+                    let b = surface.pixels[src_offset + 2] as u32;
+                    let color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                    
+                    unsafe { *dest.add(dst_offset) = color; }
                 }
+                self.pixels_composited += copy_width as u64;
+            }
+            return;
+        }
+        
+        // Per-pixel path for formats with alpha
+        for row in 0..copy_height {
+            let src_y = src_offset_y + row;
+            let dst_y = start_y + row;
+            
+            for col in 0..copy_width {
+                let src_x = src_offset_x + col;
+                let src_offset = (src_y * surface.width as usize + src_x) * bytes_per_pixel;
+                let dst_offset = dst_y * self.width + start_x + col;
                 
-                let src_offset = (y as u32 * surface.width + x as u32) as usize * bytes_per_pixel;
-                let dst_offset = screen_y as usize * self.width + screen_x as usize;
-                
-                // Read pixel from surface
                 let color = match surface.format {
                     PixelFormat::RGBA8888 => {
                         let r = surface.pixels[src_offset] as u32;
@@ -237,8 +267,15 @@ impl Compositor {
                         let b = surface.pixels[src_offset + 2] as u32;
                         let a = surface.pixels[src_offset + 3] as u32;
                         
-                        // Premultiply alpha for blending
-                        self.blend_pixel(r, g, b, a, unsafe { *dest.add(dst_offset) })
+                        // Skip fully transparent pixels
+                        if a == 0 { continue; }
+                        
+                        // Fast path for fully opaque
+                        if a == 255 {
+                            (0xFF << 24) | (r << 16) | (g << 8) | b
+                        } else {
+                            self.blend_pixel(r, g, b, a, unsafe { *dest.add(dst_offset) })
+                        }
                     }
                     PixelFormat::BGRA8888 => {
                         let b = surface.pixels[src_offset] as u32;
@@ -246,24 +283,23 @@ impl Compositor {
                         let r = surface.pixels[src_offset + 2] as u32;
                         let a = surface.pixels[src_offset + 3] as u32;
                         
-                        self.blend_pixel(r, g, b, a, unsafe { *dest.add(dst_offset) })
+                        if a == 0 { continue; }
+                        if a == 255 {
+                            (0xFF << 24) | (r << 16) | (g << 8) | b
+                        } else {
+                            self.blend_pixel(r, g, b, a, unsafe { *dest.add(dst_offset) })
+                        }
                     }
                     PixelFormat::RGB888 => {
+                        // Already handled above
                         let r = surface.pixels[src_offset] as u32;
                         let g = surface.pixels[src_offset + 1] as u32;
                         let b = surface.pixels[src_offset + 2] as u32;
-                        
                         (0xFF << 24) | (r << 16) | (g << 8) | b
                     }
                 };
                 
-                unsafe {
-                    if self.double_buffered {
-                        *dest.add(dst_offset) = color;
-                    } else {
-                        write_volatile(dest.add(dst_offset), color);
-                    }
-                }
+                unsafe { *dest.add(dst_offset) = color; }
                 self.pixels_composited += 1;
             }
         }

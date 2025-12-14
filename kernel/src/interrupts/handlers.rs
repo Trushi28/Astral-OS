@@ -313,6 +313,39 @@ pub unsafe extern "C" fn keyboard_interrupt_wrapper() {
     );
 }
 
+// Mouse interrupt (IRQ 12 / Vector 44) - APIC EOI
+#[unsafe(naked)]
+pub unsafe extern "C" fn mouse_interrupt_wrapper() {
+    core::arch::naked_asm!(
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "call mouse_interrupt_handler",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+        "iretq",
+    );
+}
+
+#[no_mangle]
+extern "C" fn mouse_interrupt_handler() {
+    crate::drivers::mouse::handle_interrupt();
+    crate::arch::apic::local_apic_eoi();
+}
+
 // Keyboard buffer and state (unchanged)
 const KB_BUFFER_SIZE: usize = 256;
 static mut KB_BUFFER: [u8; KB_BUFFER_SIZE] = [0; KB_BUFFER_SIZE];

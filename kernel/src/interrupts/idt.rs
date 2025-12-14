@@ -76,6 +76,7 @@ pub fn init_idt() {
         // Hardware interrupts (32-47)
         IDT[32].set_handler(timer_interrupt_wrapper as u64, 0);
         IDT[33].set_handler(keyboard_interrupt_wrapper as u64, 0);
+        IDT[44].set_handler(mouse_interrupt_wrapper as u64, 0);  // IRQ 12
         
         // System call (0x80)
         IDT[0x80].set_user_handler(syscall_wrapper as u64, 0);

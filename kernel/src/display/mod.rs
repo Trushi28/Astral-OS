@@ -60,10 +60,10 @@ pub struct Window {
 /// Display server state
 pub struct DisplayServer {
     clients: Vec<Client>,
-    windows: Vec<Window>,
+    pub windows: Vec<Window>,
     next_client_id: u64,
     next_window_id: u64,
-    focused_window: Option<u64>,
+    pub focused_window: Option<u64>,
     
     // Screen info
     pub screen_width: u32,

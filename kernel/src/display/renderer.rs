@@ -183,17 +183,40 @@ fn render_taskbar(server: &DisplayServer) {
     draw_text((clock_x + 10) as i32, (y + 12) as i32, "12:34", THEME.taskbar_text);
 }
 
-fn render_cursor(server: &DisplayServer) {
-    // Simple cursor at center (for now)
-    let cx = (server.screen_width / 2) as i32;
-    let cy = (server.screen_height / 2) as i32;
+fn render_cursor(_server: &DisplayServer) {
+    // Get real mouse position
+    let (mx, my) = crate::drivers::mouse::get_position();
+    let is_clicking = crate::drivers::mouse::is_left_pressed();
     
-    // Arrow shape
-    for i in 0..10 {
-        framebuffer::blit_buffer(&[0xFFFFFF], cx as usize, (cy + i) as usize, 1, 1);
+    // Mouse cursor arrow shape (12x16 pixels)
+    let cursor_color = if is_clicking { 0x00AAFF } else { 0xFFFFFF };
+    let outline_color = 0x000000;
+    
+    // Arrow cursor pattern
+    let cursor_pattern: [(i32, i32); 20] = [
+        (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7), (0, 8), (0, 9),
+        (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (2, 2), (2, 3), (2, 4), (3, 3), (3, 4),
+    ];
+    
+    // Draw outline first
+    for &(dx, dy) in &cursor_pattern {
+        let x = mx as usize + dx as usize;
+        let y = my as usize + dy as usize;
+        if x > 0 {
+            framebuffer::blit_buffer(&[outline_color], x - 1, y, 1, 1);
+        }
+        framebuffer::blit_buffer(&[outline_color], x + 1, y, 1, 1);
+        if y > 0 {
+            framebuffer::blit_buffer(&[outline_color], x, y - 1, 1, 1);
+        }
+        framebuffer::blit_buffer(&[outline_color], x, y + 1, 1, 1);
     }
-    for i in 0..5 {
-        framebuffer::blit_buffer(&[0xFFFFFF], (cx + 1 + i) as usize, (cy + 1 + i) as usize, 1, 1);
+    
+    // Draw cursor fill
+    for &(dx, dy) in &cursor_pattern {
+        let x = mx as usize + dx as usize;
+        let y = my as usize + dy as usize;
+        framebuffer::blit_buffer(&[cursor_color], x, y, 1, 1);
     }
 }
 

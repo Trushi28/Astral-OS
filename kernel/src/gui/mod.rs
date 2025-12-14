@@ -1,77 +1,462 @@
-//! Desktop GUI System - Uses Astral Display Server
+//! Desktop GUI System - Interactive Windows
 //! 
-//! This module provides the user-facing desktop experience,
-//! using the display server for all graphics operations.
+//! This module provides the user-facing desktop experience with
+//! interactive windows for file management and system info.
 
 pub mod window;
 pub mod desktop;
 pub mod theme;
 
+use alloc::vec::Vec;
+use alloc::string::String;
+use alloc::format;
 use spin::Mutex;
 use crate::display;
 
 static GUI_RUNNING: Mutex<bool> = Mutex::new(false);
 
+/// State for the file browser
+struct FileBrowser {
+    files: Vec<String>,
+    selected: usize,
+}
+
+impl FileBrowser {
+    fn new() -> Self {
+        Self {
+            files: crate::fs::psychicfs::fs_list(),
+            selected: 0,
+        }
+    }
+    
+    fn refresh(&mut self) {
+        self.files = crate::fs::psychicfs::fs_list();
+        if self.selected >= self.files.len() && !self.files.is_empty() {
+            self.selected = self.files.len() - 1;
+        }
+    }
+    
+    fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+    
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.files.len() {
+            self.selected += 1;
+        }
+    }
+    
+    fn selected_file(&self) -> Option<&String> {
+        self.files.get(self.selected)
+    }
+}
+
 /// Initialize the GUI system using display server
 pub fn init() {
-    // Initialize display server
     display::init();
     crate::serial_println!("[GUI] Using Astral Display Server");
 }
 
 /// Run the GUI main loop
 pub fn run() {
-    // Clear screen
     crate::drivers::framebuffer::clear();
     
-    // Initialize display server if not already
     display::init();
     
-    // Register as desktop client
     let client_id = display::register_client("Desktop").unwrap_or(0);
     
-    // Create initial windows via display server
-    let _ = display::create_window(client_id, "Terminal", 500, 350);
-    let _ = display::create_window(client_id, "Files", 400, 300);
-    let _ = display::create_window(client_id, "About", 320, 220);
+    // Create windows
+    let files_id = display::create_window(client_id, "Files", 400, 350).ok();
+    let about_id = display::create_window(client_id, "About Astral", 350, 250).ok();
+    let sysinfo_id = display::create_window(client_id, "System Info", 350, 280).ok();
+    
+    // File browser state
+    let mut file_browser = FileBrowser::new();
     
     *GUI_RUNNING.lock() = true;
     
-    // Initial render
+    // Draw initial content
+    if let Some(id) = files_id {
+        draw_file_browser(id, &file_browser);
+    }
+    if let Some(id) = about_id {
+        draw_about_window(id);
+    }
+    if let Some(id) = sysinfo_id {
+        draw_sysinfo_window(id);
+    }
+    
     display::renderer::render_frame();
     
-    crate::println!("");
-    crate::println!("Astral Display Server Active");
-    crate::println!("Press Tab to switch windows, 'q' to exit");
+    // Mouse state for click and drag
+    let mut last_mouse_pressed = false;
+    let mut dragging: Option<(u64, i32, i32)> = None;  // (window_id, offset_x, offset_y)
+    let mut last_mouse_pos = crate::drivers::mouse::get_position();
     
-    // Main loop
+    // Main loop - continuous rendering for mouse
     loop {
-        if let Some(key) = crate::interrupts::getchar() {
-            match key {
-                b'q' | 27 => break,  // Quit
-                b'\t' => {
-                    display::focus_next();
-                    display::renderer::render_frame();
-                }
-                _ => {
-                    // Route to focused window
-                    // For now just redraw
-                    display::renderer::render_frame();
+        // Get current mouse state
+        let (mx, my) = crate::drivers::mouse::get_position();
+        let mouse_pressed = crate::drivers::mouse::is_left_pressed();
+        let mouse_moved = mx != last_mouse_pos.0 || my != last_mouse_pos.1;
+        last_mouse_pos = (mx, my);
+        
+        // Handle mouse click
+        if mouse_pressed && !last_mouse_pressed {
+            // Mouse just clicked - check what's under cursor
+            if let Some((win_id, hit_x, hit_y)) = hit_test_window(mx, my) {
+                // Focus the window
+                display::focus_window(win_id);
+                
+                // Check if clicking title bar (first 30 pixels)
+                if hit_y < 30 {
+                    // Start dragging
+                    dragging = Some((win_id, hit_x, hit_y));
                 }
             }
         }
         
-        // Check if needs redraw
-        let needs_redraw = display::with_server(|s| s.needs_redraw()).unwrap_or(false);
-        if needs_redraw {
+        // Handle mouse release
+        if !mouse_pressed && last_mouse_pressed {
+            dragging = None;
+        }
+        
+        // Handle dragging
+        if mouse_pressed {
+            if let Some((win_id, offset_x, offset_y)) = dragging {
+                let new_x = mx - offset_x;
+                let new_y = my - offset_y;
+                display::with_server(|s| s.move_window(win_id, new_x, new_y));
+            }
+        }
+        
+        last_mouse_pressed = mouse_pressed;
+        
+        // Handle keyboard input
+        if let Some(key) = crate::interrupts::getchar() {
+            let focused = display::with_server(|s| s.focused_window).flatten();
+            
+            match key {
+                b'q' | 27 => break,  // Quit
+                b'\t' => {
+                    display::focus_next();
+                }
+                b'c' => {
+                    if let Some(win) = focused {
+                        let _ = display::destroy_window(win);
+                    }
+                }
+                // File browser navigation
+                b'j' | 80 => {
+                    if focused == files_id {
+                        file_browser.move_down();
+                        if let Some(id) = files_id {
+                            draw_file_browser(id, &file_browser);
+                        }
+                    }
+                }
+                b'k' | 72 => {
+                    if focused == files_id {
+                        file_browser.move_up();
+                        if let Some(id) = files_id {
+                            draw_file_browser(id, &file_browser);
+                        }
+                    }
+                }
+                b'r' => {
+                    if focused == files_id {
+                        file_browser.refresh();
+                        if let Some(id) = files_id {
+                            draw_file_browser(id, &file_browser);
+                        }
+                    }
+                }
+                b'd' => {
+                    if focused == files_id {
+                        if let Some(filename) = file_browser.selected_file() {
+                            crate::fs::psychicfs::fs_delete(filename);
+                            file_browser.refresh();
+                            if let Some(id) = files_id {
+                                draw_file_browser(id, &file_browser);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        // Render if mouse moved or button changed
+        if mouse_moved || mouse_pressed != last_mouse_pressed {
             display::renderer::render_frame();
         }
         
-        unsafe { core::arch::asm!("hlt"); }
+        // Brief pause to avoid 100% CPU
+        for _ in 0..1000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
     }
     
     *GUI_RUNNING.lock() = false;
     crate::drivers::framebuffer::clear();
+}
+
+/// Hit test to find window under cursor
+/// Returns (window_id, relative_x, relative_y) if hit
+fn hit_test_window(mx: i32, my: i32) -> Option<(u64, i32, i32)> {
+    display::with_server(|server| {
+        // Check windows in reverse z-order (top first)
+        let mut sorted = server.windows_sorted();
+        sorted.reverse();
+        
+        for window in sorted {
+            if mx >= window.x && mx < window.x + window.width as i32 &&
+               my >= window.y && my < window.y + window.height as i32 {
+                return Some((window.id, mx - window.x, my - window.y));
+            }
+        }
+        None
+    }).flatten()
+}
+
+fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
+    display::with_server(|server| {
+        if let Some(window) = server.windows.iter().find(|w| w.id == window_id) {
+            let surface_id = window.surface_id;
+            crate::graphics::with_server(|gs| {
+                if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    let bpp = surface.format.bytes_per_pixel();
+                    let w = surface.width;
+                    let h = surface.height;
+                    
+                    // Dark background
+                    for i in 0..(w * h) as usize {
+                        let offset = i * bpp;
+                        if offset + 3 < surface.pixels.len() {
+                            surface.pixels[offset] = 0x2d;
+                            surface.pixels[offset + 1] = 0x2d;
+                            surface.pixels[offset + 2] = 0x2d;
+                            surface.pixels[offset + 3] = 0xFF;
+                        }
+                    }
+                    
+                    // Header bar
+                    for y in 0..30u32 {
+                        for x in 0..w {
+                            let idx = ((y * w + x) as usize) * bpp;
+                            if idx + 3 < surface.pixels.len() {
+                                surface.pixels[idx] = 0x38;
+                                surface.pixels[idx + 1] = 0x38;
+                                surface.pixels[idx + 2] = 0x38;
+                                surface.pixels[idx + 3] = 0xFF;
+                            }
+                        }
+                    }
+                    
+                    draw_text_on_surface(surface, 10, 8, "File Browser", 0xFFFFFF);
+                    draw_text_on_surface(surface, 160, 8, &format!("{} files", browser.files.len()), 0x888888);
+                    
+                    // File list
+                    let mut y = 40u32;
+                    for (i, file) in browser.files.iter().enumerate() {
+                        if y > h - 40 {
+                            break;
+                        }
+                        
+                        // Selection highlight
+                        if i == browser.selected {
+                            for dy in 0..20u32 {
+                                for x in 5..w-5 {
+                                    let idx = (((y + dy) * w + x) as usize) * bpp;
+                                    if idx + 3 < surface.pixels.len() {
+                                        surface.pixels[idx] = 0x0a;
+                                        surface.pixels[idx + 1] = 0x84;
+                                        surface.pixels[idx + 2] = 0xff;
+                                        surface.pixels[idx + 3] = 0xFF;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // File icon
+                        draw_icon(surface, 15, y + 2, 0x4488FF, 16);
+                        
+                        // Filename
+                        let text_color = if i == browser.selected { 0xFFFFFF } else { 0xE0E0E0 };
+                        draw_text_on_surface(surface, 40, y + 4, file, text_color);
+                        
+                        y += 24;
+                    }
+                    
+                    // Empty state
+                    if browser.files.is_empty() {
+                        draw_text_on_surface(surface, 100, 100, "No files", 0x888888);
+                    }
+                    
+                    // Help text at bottom
+                    draw_text_on_surface(surface, 10, h - 25, "j/k:Navigate d:Delete r:Refresh", 0x666666);
+                }
+            });
+        }
+    });
+}
+
+fn draw_about_window(window_id: u64) {
+    display::with_server(|server| {
+        if let Some(window) = server.windows.iter().find(|w| w.id == window_id) {
+            let surface_id = window.surface_id;
+            crate::graphics::with_server(|gs| {
+                if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    let bpp = surface.format.bytes_per_pixel();
+                    let w = surface.width;
+                    let h = surface.height;
+                    
+                    // Gradient background
+                    for y in 0..h {
+                        for x in 0..w {
+                            let idx = ((y * w + x) as usize) * bpp;
+                            if idx + 3 < surface.pixels.len() {
+                                let t = y as f32 / h as f32;
+                                surface.pixels[idx] = lerp(0x16, 0x0f, t);
+                                surface.pixels[idx + 1] = lerp(0x21, 0x34, t);
+                                surface.pixels[idx + 2] = lerp(0x3e, 0x60, t);
+                                surface.pixels[idx + 3] = 0xFF;
+                            }
+                        }
+                    }
+                    
+                    // Logo area
+                    let logo_color = 0x00AAFF;
+                    for y in 30u32..70 {
+                        for x in 60u32..100 {
+                            let idx = ((y * w + x) as usize) * bpp;
+                            if idx + 3 < surface.pixels.len() {
+                                surface.pixels[idx] = ((logo_color >> 16) & 0xFF) as u8;
+                                surface.pixels[idx + 1] = ((logo_color >> 8) & 0xFF) as u8;
+                                surface.pixels[idx + 2] = (logo_color & 0xFF) as u8;
+                                surface.pixels[idx + 3] = 0xFF;
+                            }
+                        }
+                    }
+                    
+                    draw_text_on_surface(surface, 120, 40, "Astral OS", 0xFFFFFF);
+                    draw_text_on_surface(surface, 120, 60, "v0.3.1", 0x888888);
+                    
+                    draw_text_on_surface(surface, 40, 100, "Reality-Aware Operating System", 0xE0E0E0);
+                    draw_text_on_surface(surface, 40, 130, "Features:", 0x888888);
+                    draw_text_on_surface(surface, 50, 150, "- Extent-based filesystem", 0xE0E0E0);
+                    draw_text_on_surface(surface, 50, 170, "- IPC with blocking", 0xE0E0E0);
+                    draw_text_on_surface(surface, 50, 190, "- GUI display server", 0xE0E0E0);
+                }
+            });
+        }
+    });
+}
+
+fn draw_sysinfo_window(window_id: u64) {
+    display::with_server(|server| {
+        if let Some(window) = server.windows.iter().find(|w| w.id == window_id) {
+            let surface_id = window.surface_id;
+            crate::graphics::with_server(|gs| {
+                if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    let bpp = surface.format.bytes_per_pixel();
+                    let w = surface.width;
+                    let h = surface.height;
+                    
+                    // Dark background
+                    for i in 0..(w * h) as usize {
+                        let offset = i * bpp;
+                        if offset + 3 < surface.pixels.len() {
+                            surface.pixels[offset] = 0x1a;
+                            surface.pixels[offset + 1] = 0x1a;
+                            surface.pixels[offset + 2] = 0x2e;
+                            surface.pixels[offset + 3] = 0xFF;
+                        }
+                    }
+                    
+                    draw_text_on_surface(surface, 10, 10, "System Information", 0x00AAFF);
+                    
+                    // Memory info
+                    let (total, used, free) = crate::memory::frame::get_stats();
+                    
+                    draw_text_on_surface(surface, 10, 40, "Memory:", 0x888888);
+                    draw_text_on_surface(surface, 20, 60, &format!("Used: {} KB", used / 1024), 0xE0E0E0);
+                    draw_text_on_surface(surface, 20, 80, &format!("Free: {} KB", free / 1024), 0xE0E0E0);
+                    
+                    // Filesystem info
+                    let files = crate::fs::psychicfs::fs_list().len();
+                    draw_text_on_surface(surface, 10, 110, "Filesystem:", 0x888888);
+                    draw_text_on_surface(surface, 20, 130, &format!("Files: {}", files), 0xE0E0E0);
+                    
+                    // CPU info
+                    let cpu_count = crate::get_cpu_count();
+                    draw_text_on_surface(surface, 10, 160, "CPU:", 0x888888);
+                    draw_text_on_surface(surface, 20, 180, &format!("Cores: {}", cpu_count), 0xE0E0E0);
+                    
+                    // Screen info
+                    let (sw, sh) = crate::drivers::framebuffer::get_dimensions();
+                    draw_text_on_surface(surface, 10, 210, "Display:", 0x888888);
+                    draw_text_on_surface(surface, 20, 230, &format!("{}x{}", sw, sh), 0xE0E0E0);
+                }
+            });
+        }
+    });
+}
+
+fn draw_text_on_surface(surface: &mut crate::graphics::surface::Surface, x: u32, y: u32, text: &str, color: u32) {
+    let bpp = surface.format.bytes_per_pixel();
+    let r = ((color >> 16) & 0xFF) as u8;
+    let g = ((color >> 8) & 0xFF) as u8;
+    let b = (color & 0xFF) as u8;
+    
+    for (i, _ch) in text.chars().enumerate() {
+        for dy in 0..8u32 {
+            for dx in 0..6u32 {
+                let px = x + (i as u32 * 8) + dx;
+                let py = y + dy;
+                if px < surface.width && py < surface.height {
+                    let idx = ((py * surface.width + px) as usize) * bpp;
+                    if idx + 3 < surface.pixels.len() {
+                        if dy > 1 && dy < 7 && dx > 0 && dx < 5 {
+                            surface.pixels[idx] = r;
+                            surface.pixels[idx + 1] = g;
+                            surface.pixels[idx + 2] = b;
+                            surface.pixels[idx + 3] = 0xFF;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn draw_icon(surface: &mut crate::graphics::surface::Surface, x: u32, y: u32, color: u32, size: u32) {
+    let bpp = surface.format.bytes_per_pixel();
+    let r = ((color >> 16) & 0xFF) as u8;
+    let g = ((color >> 8) & 0xFF) as u8;
+    let b = (color & 0xFF) as u8;
+    
+    for dy in 0..size {
+        for dx in 0..size {
+            let px = x + dx;
+            let py = y + dy;
+            if px < surface.width && py < surface.height {
+                let idx = ((py * surface.width + px) as usize) * bpp;
+                if idx + 3 < surface.pixels.len() {
+                    surface.pixels[idx] = r;
+                    surface.pixels[idx + 1] = g;
+                    surface.pixels[idx + 2] = b;
+                    surface.pixels[idx + 3] = 0xFF;
+                }
+            }
+        }
+    }
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t) as u8
 }
 
 /// Check if GUI is running
