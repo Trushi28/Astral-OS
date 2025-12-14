@@ -259,7 +259,16 @@ impl FractalAllocator {
                 hot.push(region.coord);
             }
             
-            // TODO: Recursively check children
+            // Check children if they exist
+            if let Some(ref children) = region.children {
+                for child_opt in children.iter() {
+                    if let Some(child) = child_opt {
+                        if child.hotness_score() >= min_score {
+                            hot.push(child.coord);
+                        }
+                    }
+                }
+            }
         }
         
         hot

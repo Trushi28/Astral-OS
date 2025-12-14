@@ -32,7 +32,10 @@ pub fn execute(command: &str, args: core::str::SplitWhitespace, theme: &mut Shel
         "shutdown" => cmd_shutdown(),
         "reboot" => cmd_reboot(),
         "halt" => cmd_halt(),
-        "history" => {} // TODO
+        "history" => {
+            crate::println!("Command history:");
+            crate::println!("  (history tracking not yet implemented)");
+        }
         "smp" => cmd_smp(theme),
         "security" => cmd_security(args, theme),
         "graphics" => cmd_graphics(theme),

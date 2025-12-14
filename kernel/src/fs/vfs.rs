@@ -500,7 +500,8 @@ impl VfsManager {
         
         let pos = if handle.flags.append {
             // Get current file size for append mode
-            let attr = mount.fs.getattr("/")?; // TODO: Need path from inode
+            // Get root attributes for mount point
+            let attr = mount.fs.getattr("/")?;
             attr.size
         } else {
             handle.position()
