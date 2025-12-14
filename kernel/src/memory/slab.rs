@@ -6,9 +6,7 @@
 use crate::memory::frame::{allocate_frame, deallocate_frame, PhysAddr};
 use crate::PAGE_SIZE;
 use core::alloc::Layout;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use spin::Mutex;
 
 /// Slab size classes (in bytes)
 pub const SLAB_SIZES: [usize; 8] = [32, 64, 128, 256, 512, 1024, 2048, 4096];
@@ -53,7 +51,7 @@ impl Slab {
         let frame = allocate_frame()?;
         let virt_addr = frame.to_virt();
         
-        let total_objects = objects_per_slab(object_size);
+        let _total_objects = objects_per_slab(object_size);
         
         // We store the Slab struct at the beginning of the page
         // Objects start after the Slab struct

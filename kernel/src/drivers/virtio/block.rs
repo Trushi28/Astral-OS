@@ -2,7 +2,7 @@
 use crate::sync::IrqSpinlock;
 use super::pci::PciLocation;
 use super::queue::Virtqueue;
-use crate::memory::frame::{allocate_frame, deallocate_frame, PhysAddr};
+use crate::memory::frame::{allocate_frame, deallocate_frame};
 use crate::{PAGE_SIZE, get_hhdm_offset, get_timestamp};
 use core::ptr::{write_volatile, read_volatile};
 use core::sync::atomic::{fence, Ordering, AtomicBool};

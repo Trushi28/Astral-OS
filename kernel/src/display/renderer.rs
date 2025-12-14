@@ -180,43 +180,63 @@ fn render_taskbar(server: &DisplayServer) {
     let clock_x = width - 70;
     let clock_buf: Vec<u32> = alloc::vec![0x3d3d3d; (60 * 30) as usize];
     framebuffer::blit_buffer(&clock_buf, clock_x as usize, (y + 5) as usize, 60, 30);
-    draw_text((clock_x + 10) as i32, (y + 12) as i32, "12:34", THEME.taskbar_text);
+    
+    // Get real time from RTC
+    let time_str = crate::drivers::rtc::format_time();
+    draw_text((clock_x + 10) as i32, (y + 12) as i32, &time_str, THEME.taskbar_text);
 }
 
 fn render_cursor(_server: &DisplayServer) {
-    // Get real mouse position
     let (mx, my) = crate::drivers::mouse::get_position();
     let is_clicking = crate::drivers::mouse::is_left_pressed();
     
-    // Mouse cursor arrow shape (12x16 pixels)
-    let cursor_color = if is_clicking { 0x00AAFF } else { 0xFFFFFF };
+    // Cursor colors
+    let fill_color = if is_clicking { 0x00AAFF } else { 0xFFFFFF };
     let outline_color = 0x000000;
     
-    // Arrow cursor pattern
-    let cursor_pattern: [(i32, i32); 20] = [
-        (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7), (0, 8), (0, 9),
-        (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (2, 2), (2, 3), (2, 4), (3, 3), (3, 4),
+    // Proper arrow cursor pattern (classic pointer shape)
+    // Each row defines the cursor pixels
+    let cursor_rows: &[(i32, i32)] = &[
+        // Row 0: tip
+        (0, 0),
+        // Row 1-10: main arrow body
+        (0, 1), (1, 1),
+        (0, 2), (1, 2), (2, 2),
+        (0, 3), (1, 3), (2, 3), (3, 3),
+        (0, 4), (1, 4), (2, 4), (3, 4), (4, 4),
+        (0, 5), (1, 5), (2, 5), (3, 5), (4, 5), (5, 5),
+        (0, 6), (1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6),
+        (0, 7), (1, 7), (2, 7), (3, 7), (4, 7), (5, 7),
+        (0, 8), (1, 8), (2, 8), (3, 8), (4, 8), (5, 8),
+        (0, 9), (1, 9), (2, 9), (3, 9),
+        // Arrow tail
+        (0, 10), (1, 10), (4, 10), (5, 10),
+        (0, 11), (1, 11), (4, 11), (5, 11), (6, 11),
+        (5, 12), (6, 12), (7, 12),
+        (6, 13), (7, 13),
     ];
     
-    // Draw outline first
-    for &(dx, dy) in &cursor_pattern {
-        let x = mx as usize + dx as usize;
-        let y = my as usize + dy as usize;
-        if x > 0 {
+    // Draw outline (black border)
+    for &(dx, dy) in cursor_rows {
+        let x = (mx + dx) as usize;
+        let y = (my + dy) as usize;
+        
+        // Draw outline pixels around each cursor pixel
+        if dx > 0 {
             framebuffer::blit_buffer(&[outline_color], x - 1, y, 1, 1);
         }
         framebuffer::blit_buffer(&[outline_color], x + 1, y, 1, 1);
-        if y > 0 {
+        if dy > 0 {
             framebuffer::blit_buffer(&[outline_color], x, y - 1, 1, 1);
         }
         framebuffer::blit_buffer(&[outline_color], x, y + 1, 1, 1);
     }
     
     // Draw cursor fill
-    for &(dx, dy) in &cursor_pattern {
-        let x = mx as usize + dx as usize;
-        let y = my as usize + dy as usize;
-        framebuffer::blit_buffer(&[cursor_color], x, y, 1, 1);
+    for &(dx, dy) in cursor_rows {
+        let x = (mx + dx) as usize;
+        let y = (my + dy) as usize;
+        framebuffer::blit_buffer(&[fill_color], x, y, 1, 1);
     }
 }
 

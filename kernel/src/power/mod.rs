@@ -5,11 +5,11 @@ use crate::util::{outw, outl};
 use core::arch::asm;
 
 /// ACPI power management ports
-const PM1a_CNT: u16 = 0x604;  // QEMU default
-const PM1b_CNT: u16 = 0x0;    // Usually not present
+const PM1A_CNT: u16 = 0x604;  // QEMU default
+const PM1B_CNT: u16 = 0x0;    // Usually not present
 
 /// Sleep type values (chipset-specific)
-const SLP_TYPa: u16 = 0x2000; // Sleep type for shutdown
+const SLP_TYPA: u16 = 0x2000; // Sleep type for shutdown
 const SLP_EN: u16 = 0x2000;   // Sleep enable bit
 
 pub enum PowerState {
@@ -22,14 +22,14 @@ pub enum PowerState {
 fn acpi_shutdown() -> bool {
     unsafe {
         // Try ACPI shutdown via PM1 control registers
-        let sleep_command = SLP_TYPa | SLP_EN;
+        let sleep_command = SLP_TYPA | SLP_EN;
         
-        if PM1a_CNT != 0 {
-            outw(PM1a_CNT, sleep_command);
+        if PM1A_CNT != 0 {
+            outw(PM1A_CNT, sleep_command);
         }
         
-        if PM1b_CNT != 0 {
-            outw(PM1b_CNT, sleep_command);
+        if PM1B_CNT != 0 {
+            outw(PM1B_CNT, sleep_command);
         }
         
         // Wait a bit

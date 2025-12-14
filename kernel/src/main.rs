@@ -143,6 +143,11 @@ pub extern "C" fn _start() -> ! {
     crate::arch::ioapic::ioapic_set_irq(1, 33, 0, false, false);
     crate::arch::ioapic::ioapic_unmask_irq(1);
     
+    // Setup IOAPIC routing for mouse (IRQ 12 -> Vector 44)
+    serial_println(b"[BOOT] Configuring mouse IRQ...");
+    crate::arch::ioapic::ioapic_set_irq(12, 44, 0, false, false);
+    crate::arch::ioapic::ioapic_unmask_irq(12);
+    
     // Disable legacy PIC now that APIC is working
     serial_println(b"[BOOT] Disabling legacy PIC...");
     disable_legacy_pic();
@@ -280,7 +285,7 @@ pub extern "C" fn _start() -> ! {
     println!("[11/11] Network stack...");
 
     crate::network::init();
-    serial_println(b"[7/10] Starting interactive shell...");
+    serial_println(b"[12/12] Starting interactive shell...");
     
     // Start shell
     let mut shell = shell::Shell::new();
@@ -453,13 +458,13 @@ fn enable_sse() {
         // 1. Read CR0, clear EM (Emulation), set MP (Monitor Co-processor)
         asm!("mov {}, cr0", out(reg) cr0);
         cr0 &= !(1 << 2); // Clear EM bit (bit 2)
-        cr0 |= (1 << 1);  // Set MP bit (bit 1)
+        cr0 |= 1 << 1;  // Set MP bit (bit 1)
         asm!("mov cr0, {}", in(reg) cr0);
 
         // 2. Read CR4, set OSFXSR (bit 9) and OSXMMEXCPT (bit 10)
         asm!("mov {}, cr4", out(reg) cr4);
-        cr4 |= (1 << 9);  
-        cr4 |= (1 << 10); 
+        cr4 |= 1 << 9;  
+        cr4 |= 1 << 10; 
         asm!("mov cr4, {}", in(reg) cr4);
     }
 }

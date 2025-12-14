@@ -9,7 +9,7 @@
 //! - Dream-mode background optimization
 //! - Per-CPU run queues with work stealing
 
-use super::{Pid, PriorityClass, ProcessState, ProcessIntent, process_table, get_current_pid, set_current_pid};
+use super::{Pid, PriorityClass, ProcessState, ProcessIntent, process_table, get_current_pid};
 use alloc::collections::VecDeque;
 use crate::sync::IrqSpinlock;
 use crate::arch::cpu::{get_cpu_id, get_cpu_count, CpuId};

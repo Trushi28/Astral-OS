@@ -42,7 +42,7 @@ impl SocketTable {
         handle
     }
     
-    pub fn deliver_tcp(&mut self, src: Ipv4Address, dst: Ipv4Address, segment: TcpSegment) {
+    pub fn deliver_tcp(&mut self, _src: Ipv4Address, _dst: Ipv4Address, segment: TcpSegment) {
         // Find matching socket
         for socket in self.sockets.values_mut() {
             if let Socket::Tcp(ref mut conn) = socket {
@@ -54,7 +54,7 @@ impl SocketTable {
         }
     }
     
-    pub fn deliver_udp(&mut self, src: Ipv4Address, dst: Ipv4Address, datagram: UdpDatagram) {
+    pub fn deliver_udp(&mut self, src: Ipv4Address, _dst: Ipv4Address, datagram: UdpDatagram) {
         // Find matching socket
         for socket in self.sockets.values_mut() {
             if let Socket::Udp(ref mut udp) = socket {

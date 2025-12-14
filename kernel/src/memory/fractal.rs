@@ -3,7 +3,7 @@
 //! Memory regions contain recursive subspaces
 //! Spatial allocation with infinite depth potential
 
-use super::frame::{PhysAddr, allocate_frame, deallocate_frame};
+use super::frame::{PhysAddr, allocate_frame};
 use super::paging::{PageTableManager, VirtAddr, PageTableEntry};
 use crate::PAGE_SIZE;
 use alloc::vec::Vec;

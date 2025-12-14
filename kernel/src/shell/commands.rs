@@ -2,7 +2,7 @@
 use super::ShellTheme;
 use crate::drivers::framebuffer::print_colored;
 
-pub fn execute(command: &str, mut args: core::str::SplitWhitespace, theme: &mut ShellTheme) {
+pub fn execute(command: &str, args: core::str::SplitWhitespace, theme: &mut ShellTheme) {
     match command {
         "help" => cmd_help(theme),
         "clear" => cmd_clear(),
@@ -602,7 +602,7 @@ fn cmd_graphics(theme: &ShellTheme) {
             let r = ((dx * 255) / gradient_w) as u32;
             let g = ((dy * 255) / gradient_h) as u32;
             let b = 128u32;
-            let color = (r << 16) | (g << 8) | b;
+            let _color = (r << 16) | (g << 8) | b;
             
             let x = gradient_x + dx;
             let y = gradient_y + dy;

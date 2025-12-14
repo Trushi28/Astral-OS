@@ -1,8 +1,8 @@
 // src/arch/x86_64/apic.rs
 //! Local APIC (xAPIC and x2APIC) support
 
-use super::cpu::{rdmsr, wrmsr, CpuId, get_cpu_id};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use super::cpu::{rdmsr, wrmsr};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::ptr::{read_volatile, write_volatile};
 
 // APIC registers (xAPIC memory-mapped offsets)

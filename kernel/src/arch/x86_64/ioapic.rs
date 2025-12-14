@@ -41,7 +41,7 @@ pub fn ioapic_set_irq(irq: u8, vector: u8, apic_id: u32, active_low: bool, level
     
     unsafe {
         let mut low: u32 = vector as u32;
-        let mut high: u32 = apic_id << 24;
+        let high: u32 = apic_id << 24;
         
         if active_low {
             low |= 1 << 13;

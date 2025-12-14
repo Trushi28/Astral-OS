@@ -1,6 +1,4 @@
 // ============ src/security/sandbox.rs ============
-use crate::process::Pid;
-use super::capability::CapabilitySet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SandboxLevel {

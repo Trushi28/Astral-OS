@@ -1,9 +1,8 @@
 //src/drivers/framebuffer.rs
 use core::ptr::write_volatile;
 use core::mem::ManuallyDrop;
-use spin::Mutex;
 use noto_sans_mono_bitmap::{
-    get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
+    get_raster, FontWeight, RasterHeight,
 };
 
 const FONT_SIZE: RasterHeight = RasterHeight::Size20;
@@ -307,7 +306,7 @@ impl<T> IrqSafeMutex<T> {
         }
     }
     
-    pub fn lock(&self) -> IrqSafeGuard<T> {
+    pub fn lock(&self) -> IrqSafeGuard<'_, T> {
         let flags: u64;
         unsafe {
             core::arch::asm!(
@@ -499,7 +498,7 @@ pub fn blit_buffer(pixels: &[u32], x: usize, y: usize, w: usize, h: usize) {
 
 /// Draw a filled rectangle directly on framebuffer
 pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u32) {
-    let mut fb = FB.lock();
+    let fb = FB.lock();
     if let Some(ref framebuffer) = *fb {
         for dy in 0..h {
             let screen_y = y + dy;

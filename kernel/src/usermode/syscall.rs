@@ -1,9 +1,8 @@
 // src/usermode/syscall.rs
 //! System call interface and handlers
 
-use crate::process::{Pid, get_current_pid};
+use crate::process::get_current_pid;
 use core::slice;
-use alloc::vec::Vec;
 
 // Syscall numbers (extended from basic set)
 pub const SYS_READ: u64 = 0;
@@ -176,13 +175,13 @@ fn sys_write(fd: i32, buf: *const u8, count: usize) -> SyscallResult {
     Err(SyscallError::InvalidArgument)
 }
 
-fn sys_open(path: *const u8, flags: u32, mode: u32) -> SyscallResult {
+fn sys_open(path: *const u8, _flags: u32, _mode: u32) -> SyscallResult {
     if path.is_null() {
         return Err(SyscallError::InvalidArgument);
     }
     
     // Read path from userspace
-    let path_str = unsafe { read_user_string(path, 4096)? };
+    let _path_str = unsafe { read_user_string(path, 4096)? };
     
     // For now, stub implementation
     Err(SyscallError::NotImplemented)
@@ -232,7 +231,7 @@ fn sys_reality_fork() -> SyscallResult {
     Ok(new_reality.as_u64())
 }
 
-fn sys_reality_merge(target_reality_id: u64) -> SyscallResult {
+fn sys_reality_merge(_target_reality_id: u64) -> SyscallResult {
     use crate::reality::causality::{RealityId, set_current_reality};
     
     let target = RealityId::new(); // Would lookup by ID
@@ -264,7 +263,7 @@ fn sys_intent_request(intent_str: *const u8, len: usize) -> SyscallResult {
     }
     
     unsafe {
-        let intent_data = slice::from_raw_parts(intent_str, len);
+        let _intent_data = slice::from_raw_parts(intent_str, len);
         
         // Parse intent and route to appropriate handler
         // For now, stub
@@ -273,7 +272,7 @@ fn sys_intent_request(intent_str: *const u8, len: usize) -> SyscallResult {
     Err(SyscallError::NotImplemented)
 }
 
-fn sys_capability_check(capability_id: u64) -> SyscallResult {
+fn sys_capability_check(_capability_id: u64) -> SyscallResult {
     // Check if current process has capability
     // For now, grant all capabilities
     Ok(1)

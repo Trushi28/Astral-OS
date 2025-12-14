@@ -53,33 +53,33 @@ static mut IDT: [IdtEntry; IDT_SIZE] = [IdtEntry::new(); IDT_SIZE];
 pub fn init_idt() {
     unsafe {
         // CPU Exceptions (0-31)
-        IDT[0].set_handler(divide_error_wrapper as u64, 0);
-        IDT[1].set_handler(debug_wrapper as u64, 0);
-        IDT[2].set_handler(nmi_wrapper as u64, 0);
-        IDT[3].set_handler(breakpoint_wrapper as u64, 0);
-        IDT[4].set_handler(overflow_wrapper as u64, 0);
-        IDT[5].set_handler(bound_range_wrapper as u64, 0);
-        IDT[6].set_handler(invalid_opcode_wrapper as u64, 0);
-        IDT[7].set_handler(device_not_available_wrapper as u64, 0);
-        IDT[8].set_handler(double_fault_wrapper as u64, 1);
-        IDT[10].set_handler(invalid_tss_wrapper as u64, 0);
-        IDT[11].set_handler(segment_not_present_wrapper as u64, 0);
-        IDT[12].set_handler(stack_segment_fault_wrapper as u64, 0);
-        IDT[13].set_handler(general_protection_fault_wrapper as u64, 0);
-        IDT[14].set_handler(page_fault_wrapper as u64, 0);
-        IDT[16].set_handler(x87_fpu_error_wrapper as u64, 0);
-        IDT[17].set_handler(alignment_check_wrapper as u64, 0);
-        IDT[18].set_handler(machine_check_wrapper as u64, 0);
-        IDT[19].set_handler(simd_exception_wrapper as u64, 0);
-        IDT[20].set_handler(virtualization_exception_wrapper as u64, 0);
+        IDT[0].set_handler(divide_error_wrapper as *const () as u64, 0);
+        IDT[1].set_handler(debug_wrapper as *const () as u64, 0);
+        IDT[2].set_handler(nmi_wrapper as *const () as u64, 0);
+        IDT[3].set_handler(breakpoint_wrapper as *const () as u64, 0);
+        IDT[4].set_handler(overflow_wrapper as *const () as u64, 0);
+        IDT[5].set_handler(bound_range_wrapper as *const () as u64, 0);
+        IDT[6].set_handler(invalid_opcode_wrapper as *const () as u64, 0);
+        IDT[7].set_handler(device_not_available_wrapper as *const () as u64, 0);
+        IDT[8].set_handler(double_fault_wrapper as *const () as u64, 1);
+        IDT[10].set_handler(invalid_tss_wrapper as *const () as u64, 0);
+        IDT[11].set_handler(segment_not_present_wrapper as *const () as u64, 0);
+        IDT[12].set_handler(stack_segment_fault_wrapper as *const () as u64, 0);
+        IDT[13].set_handler(general_protection_fault_wrapper as *const () as u64, 0);
+        IDT[14].set_handler(page_fault_wrapper as *const () as u64, 0);
+        IDT[16].set_handler(x87_fpu_error_wrapper as *const () as u64, 0);
+        IDT[17].set_handler(alignment_check_wrapper as *const () as u64, 0);
+        IDT[18].set_handler(machine_check_wrapper as *const () as u64, 0);
+        IDT[19].set_handler(simd_exception_wrapper as *const () as u64, 0);
+        IDT[20].set_handler(virtualization_exception_wrapper as *const () as u64, 0);
         
         // Hardware interrupts (32-47)
-        IDT[32].set_handler(timer_interrupt_wrapper as u64, 0);
-        IDT[33].set_handler(keyboard_interrupt_wrapper as u64, 0);
-        IDT[44].set_handler(mouse_interrupt_wrapper as u64, 0);  // IRQ 12
+        IDT[32].set_handler(timer_interrupt_wrapper as *const () as u64, 0);
+        IDT[33].set_handler(keyboard_interrupt_wrapper as *const () as u64, 0);
+        IDT[44].set_handler(mouse_interrupt_wrapper as *const () as u64, 0);  // IRQ 12
         
         // System call (0x80)
-        IDT[0x80].set_user_handler(syscall_wrapper as u64, 0);
+        IDT[0x80].set_user_handler(syscall_wrapper as *const () as u64, 0);
         
         let descriptor = IdtDescriptor {
             limit: (core::mem::size_of::<[IdtEntry; IDT_SIZE]>() - 1) as u16,

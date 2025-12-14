@@ -23,7 +23,7 @@ impl<T> IrqSpinlock<T> {
         }
     }
     
-    pub fn lock(&self) -> IrqSpinlockGuard<T> {
+    pub fn lock(&self) -> IrqSpinlockGuard<'_, T> {
         // Save interrupt flag and disable interrupts
         let flags = self.save_and_disable_irq();
         
@@ -46,7 +46,7 @@ impl<T> IrqSpinlock<T> {
         }
     }
     
-    pub fn try_lock(&self) -> Option<IrqSpinlockGuard<T>> {
+    pub fn try_lock(&self) -> Option<IrqSpinlockGuard<'_, T>> {
         let flags = self.save_and_disable_irq();
         
         if self.locked.compare_exchange(
@@ -133,7 +133,7 @@ impl<T> RwLock<T> {
         }
     }
     
-    pub fn read(&self) -> RwLockReadGuard<T> {
+    pub fn read(&self) -> RwLockReadGuard<'_, T> {
         loop {
             // Wait for writer to finish
             while self.writer.load(Ordering::Acquire) {
@@ -153,7 +153,7 @@ impl<T> RwLock<T> {
         }
     }
     
-    pub fn write(&self) -> RwLockWriteGuard<T> {
+    pub fn write(&self) -> RwLockWriteGuard<'_, T> {
         // Acquire writer lock
         while self.writer.compare_exchange_weak(
             false,

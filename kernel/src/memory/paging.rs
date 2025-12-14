@@ -1,8 +1,7 @@
 // src/memory/paging.rs
-use super::frame::{PhysAddr, allocate_frame, deallocate_frame};
-use crate::{PAGE_SIZE, util::align_down};
+use super::frame::{PhysAddr, allocate_frame};
+use crate::PAGE_SIZE;
 use core::arch::asm;
-use core::sync::atomic::{fence, Ordering};
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]

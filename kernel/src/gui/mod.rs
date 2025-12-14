@@ -6,6 +6,7 @@
 pub mod window;
 pub mod desktop;
 pub mod theme;
+pub mod font;
 
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -188,14 +189,20 @@ pub fn run() {
             }
         }
         
-        // Render if mouse moved or button changed
-        if mouse_moved || mouse_pressed != last_mouse_pressed {
+        // Only render when something changed to reduce flickering
+        let should_render = mouse_moved || (mouse_pressed != last_mouse_pressed);
+        
+        if should_render {
             display::renderer::render_frame();
         }
         
-        // Brief pause to avoid 100% CPU
-        for _ in 0..1000 {
-            unsafe { core::arch::asm!("nop"); }
+        // Small yield to allow interrupts - ensure interrupts are enabled
+        unsafe { 
+            core::arch::asm!(
+                "sti",  // Enable interrupts
+                "hlt",  // Wait for interrupt
+                options(nomem, nostack)
+            ); 
         }
     }
     
@@ -255,8 +262,10 @@ fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
                         }
                     }
                     
-                    draw_text_on_surface(surface, 10, 8, "File Browser", 0xFFFFFF);
-                    draw_text_on_surface(surface, 160, 8, &format!("{} files", browser.files.len()), 0x888888);
+                    // Header text with REAL FONT
+                    font::draw_string(surface, 10, 8, "File Browser", 0xFFFFFF);
+                    let count_str = format!("{} files", browser.files.len());
+                    font::draw_string(surface, 180, 8, &count_str, 0x888888);
                     
                     // File list
                     let mut y = 40u32;
@@ -280,23 +289,37 @@ fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
                             }
                         }
                         
-                        // File icon
-                        draw_icon(surface, 15, y + 2, 0x4488FF, 16);
+                        // File icon (simple square)
+                        for dy in 0..12u32 {
+                            for dx in 0..12u32 {
+                                let px = 15 + dx;
+                                let py = y + 4 + dy;
+                                if px < w && py < h {
+                                    let idx = ((py * w + px) as usize) * bpp;
+                                    if idx + 3 < surface.pixels.len() {
+                                        surface.pixels[idx] = 0x44;
+                                        surface.pixels[idx + 1] = 0x88;
+                                        surface.pixels[idx + 2] = 0xFF;
+                                        surface.pixels[idx + 3] = 0xFF;
+                                    }
+                                }
+                            }
+                        }
                         
-                        // Filename
+                        // Filename with REAL FONT
                         let text_color = if i == browser.selected { 0xFFFFFF } else { 0xE0E0E0 };
-                        draw_text_on_surface(surface, 40, y + 4, file, text_color);
+                        font::draw_string(surface, 35, y + 4, file, text_color);
                         
                         y += 24;
                     }
                     
                     // Empty state
                     if browser.files.is_empty() {
-                        draw_text_on_surface(surface, 100, 100, "No files", 0x888888);
+                        font::draw_string(surface, 120, 100, "No files", 0x888888);
                     }
                     
-                    // Help text at bottom
-                    draw_text_on_surface(surface, 10, h - 25, "j/k:Navigate d:Delete r:Refresh", 0x666666);
+                    // Help text at bottom with REAL FONT
+                    font::draw_string(surface, 10, h - 20, "j/k:Navigate  d:Delete  r:Refresh", 0x666666);
                 }
             });
         }
@@ -341,14 +364,14 @@ fn draw_about_window(window_id: u64) {
                         }
                     }
                     
-                    draw_text_on_surface(surface, 120, 40, "Astral OS", 0xFFFFFF);
-                    draw_text_on_surface(surface, 120, 60, "v0.3.1", 0x888888);
+                    font::draw_string(surface, 120, 40, "Astral OS", 0xFFFFFF);
+                    font::draw_string(surface, 120, 60, "v0.3.1", 0x888888);
                     
-                    draw_text_on_surface(surface, 40, 100, "Reality-Aware Operating System", 0xE0E0E0);
-                    draw_text_on_surface(surface, 40, 130, "Features:", 0x888888);
-                    draw_text_on_surface(surface, 50, 150, "- Extent-based filesystem", 0xE0E0E0);
-                    draw_text_on_surface(surface, 50, 170, "- IPC with blocking", 0xE0E0E0);
-                    draw_text_on_surface(surface, 50, 190, "- GUI display server", 0xE0E0E0);
+                    font::draw_string(surface, 30, 100, "Reality-Aware Operating System", 0xE0E0E0);
+                    font::draw_string(surface, 30, 130, "Features:", 0x888888);
+                    font::draw_string(surface, 40, 150, "- Extent-based filesystem", 0xE0E0E0);
+                    font::draw_string(surface, 40, 170, "- IPC with blocking", 0xE0E0E0);
+                    font::draw_string(surface, 40, 190, "- GUI display server", 0xE0E0E0);
                 }
             });
         }
@@ -376,29 +399,34 @@ fn draw_sysinfo_window(window_id: u64) {
                         }
                     }
                     
-                    draw_text_on_surface(surface, 10, 10, "System Information", 0x00AAFF);
+                    font::draw_string(surface, 10, 10, "System Information", 0x00AAFF);
                     
                     // Memory info
                     let (total, used, free) = crate::memory::frame::get_stats();
                     
-                    draw_text_on_surface(surface, 10, 40, "Memory:", 0x888888);
-                    draw_text_on_surface(surface, 20, 60, &format!("Used: {} KB", used / 1024), 0xE0E0E0);
-                    draw_text_on_surface(surface, 20, 80, &format!("Free: {} KB", free / 1024), 0xE0E0E0);
+                    font::draw_string(surface, 10, 40, "Memory:", 0x888888);
+                    let used_str = format!("Used: {} KB", used / 1024);
+                    font::draw_string(surface, 20, 60, &used_str, 0xE0E0E0);
+                    let free_str = format!("Free: {} KB", free / 1024);
+                    font::draw_string(surface, 20, 80, &free_str, 0xE0E0E0);
                     
                     // Filesystem info
                     let files = crate::fs::psychicfs::fs_list().len();
-                    draw_text_on_surface(surface, 10, 110, "Filesystem:", 0x888888);
-                    draw_text_on_surface(surface, 20, 130, &format!("Files: {}", files), 0xE0E0E0);
+                    font::draw_string(surface, 10, 110, "Filesystem:", 0x888888);
+                    let files_str = format!("Files: {}", files);
+                    font::draw_string(surface, 20, 130, &files_str, 0xE0E0E0);
                     
                     // CPU info
                     let cpu_count = crate::get_cpu_count();
-                    draw_text_on_surface(surface, 10, 160, "CPU:", 0x888888);
-                    draw_text_on_surface(surface, 20, 180, &format!("Cores: {}", cpu_count), 0xE0E0E0);
+                    font::draw_string(surface, 10, 160, "CPU:", 0x888888);
+                    let cpu_str = format!("Cores: {}", cpu_count);
+                    font::draw_string(surface, 20, 180, &cpu_str, 0xE0E0E0);
                     
                     // Screen info
                     let (sw, sh) = crate::drivers::framebuffer::get_dimensions();
-                    draw_text_on_surface(surface, 10, 210, "Display:", 0x888888);
-                    draw_text_on_surface(surface, 20, 230, &format!("{}x{}", sw, sh), 0xE0E0E0);
+                    font::draw_string(surface, 10, 210, "Display:", 0x888888);
+                    let display_str = format!("{}x{}", sw, sh);
+                    font::draw_string(surface, 20, 230, &display_str, 0xE0E0E0);
                 }
             });
         }

@@ -4,7 +4,7 @@ pub mod commands;
 use alloc::vec::Vec;
 use alloc::string::String;
 use crate::interrupts::{getchar, KB_ARROW_UP, KB_ARROW_DOWN, KB_ARROW_LEFT, KB_ARROW_RIGHT};
-use crate::drivers::framebuffer::{print_colored, print, get_cursor_pos, set_cursor_pos, clear_line};
+use crate::drivers::framebuffer::{print_colored, get_cursor_pos, set_cursor_pos, clear_line};
 use core::arch::asm;
 use alloc::string::ToString;
 

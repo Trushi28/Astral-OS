@@ -1,7 +1,6 @@
 // src/network/tcp.rs
 
 use super::ip::Ipv4Address;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 
 pub const TCP_FLAG_FIN: u8 = 0x01;

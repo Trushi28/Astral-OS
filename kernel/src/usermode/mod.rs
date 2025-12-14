@@ -7,9 +7,8 @@ pub mod elf;
 pub mod test;
 
 use crate::process::{Process, Pid, ProcessState, Registers};
-use crate::memory::{PageTableManager, VirtAddr, PhysAddr, PageTableEntry};
+use crate::memory::{PageTableManager, VirtAddr, PageTableEntry};
 use crate::memory::frame::allocate_frame;
-use alloc::vec::Vec;
 
 // Userspace memory layout
 pub const USER_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
@@ -32,7 +31,7 @@ pub fn create_user_process(elf_data: &[u8]) -> Result<Pid, &'static str> {
     let entry_point = loader::load_elf(elf_data, &mut page_table)?;
     
     // Allocate and map user stack
-    let stack_bottom = allocate_user_stack(&mut page_table)?;
+    let _stack_bottom = allocate_user_stack(&mut page_table)?;
     
     // Create process structure
     let mut process = Process::new(pid);

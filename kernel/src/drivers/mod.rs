@@ -4,6 +4,7 @@ pub mod keyboard;
 pub mod framebuffer;
 pub mod virtio;
 pub mod mouse;
+pub mod rtc;
 
 pub fn init() {
     crate::println!("[8/10] Serial port...");

@@ -2,9 +2,8 @@
 //! Intent-driven system calls - programs request what they want, OS decides how
 
 use super::causality::{RealityId, log_event, CausalEventType, CausalEventData, get_total_events};
-use crate::memory::fractal::{allocate_fractal_region, SpatialCoord};
+use crate::memory::fractal::allocate_fractal_region;
 use crate::fs::psychicfs::{fs_read, fs_write, fs_list};
-use alloc::vec::Vec;
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -269,7 +269,7 @@ pub fn process_table() -> &'static Mutex<ProcessTable> {
     &PROCESS_TABLE
 }
 
-pub fn exit_process(exit_code: i32) {
+pub fn exit_process(_exit_code: i32) {
     if let Some(current) = get_current_pid() {
         let mut table = PROCESS_TABLE.lock();
         

@@ -32,7 +32,6 @@ pub mod renderer;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::graphics::surface::Surface;
 
 /// Display server client (an application)
 pub struct Client {

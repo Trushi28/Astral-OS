@@ -1,9 +1,8 @@
 // src/arch/x86_64/cpu.rs
 //! CPU identification and per-CPU data structures
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 use core::arch::asm;
-use spin::Mutex;
 
 /// Maximum CPUs supported (x2APIC limit)
 pub const MAX_CPUS: usize = 256;
@@ -48,7 +47,7 @@ pub struct CpuFeatures {
 impl CpuFeatures {
     pub fn detect() -> Self {
         let (_, _, ecx, edx) = cpuid(1, 0);
-        let (ebx_7, ecx_7, _, _) = cpuid(7, 0);
+        let (ebx_7, _ecx_7, _, _) = cpuid(7, 0);
         
         Self {
             apic: (edx & (1 << 9)) != 0,

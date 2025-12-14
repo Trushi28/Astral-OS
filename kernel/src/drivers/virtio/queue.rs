@@ -1,5 +1,4 @@
 //src/drivers/virtio/queue.rs
-use crate::memory::frame::{allocate_frame, PhysAddr};
 use crate::util::align_up;
 use crate::PAGE_SIZE;
 use core::sync::atomic::{fence, Ordering};
@@ -79,7 +78,7 @@ impl Virtqueue {
     pub fn size_requirements(queue_size: u16) -> (usize, usize, usize) {
         let desc_size = 16 * queue_size as usize;
         let avail_size = 6 + (2 * queue_size as usize);
-        let used_size = 6 + (8 * queue_size as usize);
+        let _used_size = 6 + (8 * queue_size as usize);
         
         let avail_offset = desc_size;
         let used_offset = align_up(avail_offset + avail_size, 4);
@@ -92,7 +91,7 @@ impl Virtqueue {
             return Err("Invalid queue size");
         }
         
-        let (desc_size, avail_offset, used_offset) = Self::size_requirements(queue_size);
+        let (_desc_size, avail_offset, used_offset) = Self::size_requirements(queue_size);
         
         let total_required = used_offset + 6 + (8 * queue_size as usize);
         if total_required > PAGE_SIZE {
