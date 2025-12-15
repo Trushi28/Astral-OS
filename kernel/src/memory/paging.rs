@@ -146,6 +146,19 @@ impl PageTableManager {
         }
     }
     
+    /// Create PageTableManager from a physical address
+    /// 
+    /// # Safety  
+    /// The physical address must point to a valid PML4 table
+    pub fn from_phys(phys: PhysAddr) -> Self {
+        let hhdm = crate::get_hhdm_offset();
+        let p4_ptr = (phys.as_u64() as usize + hhdm) as *mut PageTable;
+        
+        Self {
+            p4_table: unsafe { &mut *p4_ptr },
+        }
+    }
+    
     /// Get physical address of P4 table
     pub fn p4_physical(&self) -> PhysAddr {
         let hhdm = crate::get_hhdm_offset();

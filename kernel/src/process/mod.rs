@@ -123,6 +123,9 @@ pub struct Process {
     pub registers: Registers,
     pub page_table: u64,
     pub kernel_stack: u64,
+    // Ring 3 userspace fields
+    pub user_stack: u64,        // User-mode stack top
+    pub is_user_process: bool,  // True if this runs in Ring 3
     // AstralScheduler fields
     pub priority: PriorityClass,
     pub intent: ProcessIntent,
@@ -142,6 +145,8 @@ impl Process {
             registers: Registers::new(),
             page_table: 0,
             kernel_stack: 0,
+            user_stack: 0,
+            is_user_process: false,
             priority: PriorityClass::Normal,
             intent: ProcessIntent::None,
             reality_id: 0,

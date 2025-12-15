@@ -41,6 +41,7 @@ pub fn execute(command: &str, args: core::str::SplitWhitespace, theme: &mut Shel
         "graphics" => cmd_graphics(theme),
         "net" => cmd_net(args, theme),
         "usertest" => cmd_usertest(theme),
+        "spawn_test" => cmd_spawn_test(theme),
         "gui" | "desktop" => cmd_gui(theme),
         "editor" | "edit" => cmd_editor(args, theme),
         _ => {
@@ -661,6 +662,54 @@ fn cmd_net(mut args: core::str::SplitWhitespace, theme: &ShellTheme) {
 fn cmd_usertest(theme: &ShellTheme) {
     print_colored("Launching Ring 3 user shell...\n", theme.info_color);
     crate::usermode::launcher::launch_user_shell();
+}
+
+fn cmd_spawn_test(theme: &ShellTheme) {
+    print_colored("=== Ring 3 Userspace Test ===\n", theme.info_color);
+    
+    // Use the embedded test binary (raw machine code)
+    let test_code = crate::usermode::spawn::get_test_user_binary();
+    crate::println!("  Test binary: {} bytes", test_code.len());
+    
+    // Create a minimal ELF-like structure in memory
+    // For now, we'll use the flat binary loader approach
+    print_colored("  Loading test binary as flat code...\n", theme.info_color);
+    
+    // Create user address space
+    match crate::arch::x86_64::usermode::create_user_address_space() {
+        Ok((mut page_table, stack_top)) => {
+            crate::println!("  User address space created");
+            crate::println!("  Stack top: 0x{:x}", stack_top);
+            
+            // Load the test code at USER_CODE_BASE
+            let code_base = crate::arch::x86_64::usermode::USER_CODE_BASE;
+            
+            match crate::usermode::loader::load_flat_binary(test_code, &mut page_table, code_base) {
+                Ok(entry) => {
+                    crate::println!("  Code loaded at: 0x{:x}", entry);
+                    print_colored("  Jumping to Ring 3...\n", theme.success_color);
+                    
+                    // Update TSS kernel stack
+                    crate::arch::x86_64::tss::update_kernel_stack(
+                        crate::arch::x86_64::tss::get_kernel_stack()
+                    );
+                    
+                    // Switch to user page table and jump to user mode
+                    unsafe {
+                        let pt_phys = page_table.p4_physical().as_u64();
+                        core::arch::asm!("mov cr3, {}", in(reg) pt_phys, options(nostack));
+                        crate::arch::x86_64::usermode::enter_usermode(entry, stack_top);
+                    }
+                }
+                Err(e) => {
+                    print_colored(&alloc::format!("  Load failed: {}\n", e), theme.error_color);
+                }
+            }
+        }
+        Err(e) => {
+            print_colored(&alloc::format!("  Failed to create address space: {}\n", e), theme.error_color);
+        }
+    }
 }
 
 fn cmd_gui(theme: &ShellTheme) {

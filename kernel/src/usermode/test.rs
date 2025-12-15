@@ -74,78 +74,46 @@ pub static TEST_USERSPACE_BINARY: &[u8] = &[
     0xE9, 0x7C, 0xFF, 0xFF, 0xFF,  // jmp -132 (back to start)
 ];
 
-/// Run the embedded test userspace program
-pub fn run_test_program() -> Result<(), &'static str> {
-    use super::{USER_CODE_START, USER_STACK_TOP, loader::load_flat_binary};
-    use crate::memory::PageTableManager;
-    use crate::memory::frame::allocate_frame;
-    
-    crate::println!("[USERMODE] Starting test userspace program...");
-    
-    // Create new page table for user process
-    let mut page_table = PageTableManager::new()
-        .ok_or("Failed to create page table")?;
-    
-    // Map kernel space (higher half)
-    super::map_kernel_space(&mut page_table)?;
-    crate::println!("[USERMODE] Kernel space mapped");
-    
-    // Print IDT address for debugging
-    let idt_addr = crate::interrupts::idt::get_idt_addr();
-    crate::println!("[USERMODE] IDT at 0x{:x} (P4 index {})", idt_addr, idt_addr >> 39 & 0x1FF);
-    
-    // Load flat binary
-    let _load_addr = load_flat_binary(TEST_USERSPACE_BINARY, &mut page_table, USER_CODE_START)?;
-    // Entry point is at offset 0x50 (after data section)
-    let entry_point = USER_CODE_START + 0x50;
-    crate::println!("[USERMODE] Loaded at 0x{:x}, entry: 0x{:x}", USER_CODE_START, entry_point);
-    
-    // Map a few extra pages after code for CPU prefetch
-    // CPU may speculatively fetch from next page
-    for i in 1..4 {
-        let extra_addr = crate::memory::VirtAddr::new(USER_CODE_START + (i * crate::PAGE_SIZE) as u64);
-        if let Some(frame) = allocate_frame() {
-            unsafe {
-                let ptr = frame.to_virt() as *mut u8;
-                core::ptr::write_bytes(ptr, 0x90u8, crate::PAGE_SIZE); // Fill with NOPs
-            }
-            let _ = page_table.map(
-                extra_addr,
-                frame,
-                crate::memory::PageTableEntry::PRESENT | 
-                crate::memory::PageTableEntry::USER
-            );
-            crate::println!("[USERMODE] Extra page mapped at 0x{:x}", extra_addr.as_u64());
-        }
-    }
-    
-    // Allocate and map user stack
-    let _stack_bottom = super::allocate_user_stack(&mut page_table)?;
-    crate::println!("[USERMODE] Stack at 0x{:x}", USER_STACK_TOP);
-    
-    // Allocate kernel stack for this process
-    let kernel_stack = if let Some(frame) = allocate_frame() {
-        frame.to_virt() + crate::PAGE_SIZE
-    } else {
-        return Err("Failed to allocate kernel stack");
+/// Run the embedded test userspace program using the new spawn API
+pub fn run_test_program() -> ! {
+    use crate::arch::x86_64::usermode::{
+        create_user_address_space, 
+        enter_usermode,
+        USER_CODE_BASE,
     };
-    crate::println!("[USERMODE] Kernel stack at 0x{:x}", kernel_stack);
+    use super::loader::load_flat_binary;
+    
+    crate::serial_println!("[USERMODE] Starting test userspace program...");
+    
+    // Create new user address space (page table with kernel mappings + user stack)
+    let (mut page_table, stack_top) = create_user_address_space()
+        .expect("Failed to create user address space");
+    crate::serial_println!("[USERMODE] User address space created, stack at 0x{:x}", stack_top);
+    
+    // Load flat binary at user code base
+    let load_addr = load_flat_binary(TEST_USERSPACE_BINARY, &mut page_table, USER_CODE_BASE)
+        .expect("Failed to load user binary");
+    // Entry point is at offset 0x50 (after data section)
+    let entry_point = load_addr + 0x50;
+    crate::serial_println!("[USERMODE] Loaded at 0x{:x}, entry: 0x{:x}", load_addr, entry_point);
+    
+    // Update TSS kernel stack for syscall returns
+    crate::arch::x86_64::tss::update_kernel_stack(
+        crate::arch::x86_64::tss::get_kernel_stack()
+    );
     
     let page_table_phys = page_table.p4_physical().as_u64();
-    crate::println!("[USERMODE] Page table at phys 0x{:x}", page_table_phys);
+    crate::serial_println!("[USERMODE] Page table at phys 0x{:x}", page_table_phys);
+    crate::serial_println!("[USERMODE] Entering ring 3...");
     
-    crate::println!("[USERMODE] Entering ring 3...");
-    
-    // Enter usermode directly
+    // Switch to user page table and enter usermode
     unsafe {
-        super::direct_enter_usermode(
-            page_table_phys,
-            kernel_stack as u64,
-            entry_point,           // RIP
-            USER_STACK_TOP,        // RSP
-            0x1B,                  // CS = user code segment
-            0x23,                  // SS = user data segment  
-            0x202,                 // RFLAGS = IF enabled
-        );
+        core::arch::asm!("mov cr3, {}", in(reg) page_table_phys, options(nostack));
+        enter_usermode(entry_point, stack_top);
+    }
+    
+    // Never reached - enter_usermode doesn't return
+    loop {
+        core::hint::spin_loop();
     }
 }

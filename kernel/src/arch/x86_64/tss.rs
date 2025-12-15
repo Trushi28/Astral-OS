@@ -87,3 +87,18 @@ pub fn get_tss_ptr() -> *const TaskStateSegment {
 pub fn get_tss_size() -> usize {
     size_of::<TaskStateSegment>()
 }
+
+/// Update kernel stack pointer (rsp0) for context switch
+/// 
+/// This must be called before switching to a user process so that
+/// syscall/interrupt handlers use the correct kernel stack.
+pub fn update_kernel_stack(kernel_stack_top: u64) {
+    unsafe {
+        TSS.rsp0 = kernel_stack_top;
+    }
+}
+
+/// Get current kernel stack pointer
+pub fn get_kernel_stack() -> u64 {
+    unsafe { TSS.rsp0 }
+}
