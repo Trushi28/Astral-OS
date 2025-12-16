@@ -1,9 +1,14 @@
 //! User-Mode Shell
 //! 
 //! This shell uses the syscall-style API for all I/O operations.
-//! Currently runs in Ring 0 but the API is designed for Ring 3.
+//! Designed to run in Ring 3 user mode.
 
-use super::usys::{sys_print, sys_read_char, sys_yield};
+use super::usys::{
+    sys_print, sys_read_char, sys_yield, sys_write,
+    sys_fs_list, sys_get_process_info, sys_get_mem_info, 
+    sys_get_cpu_info, sys_clear_screen, sys_exit,
+    sys_getuid,
+};
 
 /// Command buffer size
 const CMD_BUF_SIZE: usize = 256;
@@ -14,7 +19,7 @@ pub extern "C" fn user_shell_main() -> ! {
     // Print welcome message
     sys_print("\n");
     sys_print("===========================================\n");
-    sys_print("       Astral OS - User Mode Shell\n");
+    sys_print("       Astral OS - Ring 3 User Shell\n");
     sys_print("===========================================\n");
     sys_print("Type 'help' for available commands\n\n");
     
@@ -24,7 +29,12 @@ pub extern "C" fn user_shell_main() -> ! {
     
     loop {
         // Print prompt
-        sys_print("root@astral:~$ ");
+        let uid = sys_getuid();
+        if uid == 0 {
+            sys_print("root@astral# ");
+        } else {
+            sys_print("user@astral$ ");
+        }
         
         // Read command
         cmd_len = 0;
@@ -53,7 +63,7 @@ pub extern "C" fn user_shell_main() -> ! {
                         cmd_buf[cmd_len] = c;
                         cmd_len += 1;
                         let echo = [c];
-                        super::usys::sys_write(&echo);
+                        sys_write(&echo);
                     }
                 }
             }
@@ -70,23 +80,52 @@ pub extern "C" fn user_shell_main() -> ! {
 fn process_command(cmd: &[u8]) {
     // Convert to string for easier matching
     let cmd_str = core::str::from_utf8(cmd).unwrap_or("");
-    let parts: alloc::vec::Vec<&str> = cmd_str.split_whitespace().collect();
+    let mut parts = cmd_str.split_whitespace();
     
-    if parts.is_empty() {
-        return;
-    }
+    let command = match parts.next() {
+        Some(c) => c,
+        None => return,
+    };
     
-    match parts[0] {
+    match command {
         "help" => cmd_help(),
         "info" | "uname" => cmd_uname(),
         "clear" | "cls" => cmd_clear(),
-        "echo" => cmd_echo(&parts[1..]),
+        "echo" => {
+            for part in parts {
+                sys_print(part);
+                sys_print(" ");
+            }
+            sys_print("\n");
+        },
         "ls" => cmd_ls(),
-        "pwd" => cmd_pwd(),
-        "date" | "time" => cmd_date(),
+        "pwd" => {
+            let uid = sys_getuid();
+            if uid == 0 {
+                sys_print("/root\n");
+            } else {
+                sys_print("/home/user\n");
+            }
+        },
+        "date" | "time" => sys_print("System clock not yet implemented\n"),
         "ps" => cmd_ps(),
-        "whoami" => cmd_whoami(),
-        "uptime" => cmd_uptime(),
+        "whoami" => {
+            let uid = sys_getuid();
+            if uid == 0 {
+                sys_print("root\n");
+            } else {
+                sys_print("user (uid=");
+                // Simple number printing would be nice, but for now just "user" or naive implementation if we can't print number
+                // Convert uid to string? usys doesn't have format!
+                // We'll just print "user" for now, or assume 1000
+                if uid == 1000 {
+                    sys_print("user\n");
+                } else {
+                    sys_print("unknown\n");
+                }
+            }
+        },
+        "uptime" => sys_print("System running since boot\n"),
         "mem" | "free" => cmd_mem(),
         "cpu" => cmd_cpu(),
         "exit" | "logout" => cmd_exit(),
@@ -94,9 +133,8 @@ fn process_command(cmd: &[u8]) {
         "version" => cmd_version(),
         _ => {
             sys_print("Command not found: ");
-            sys_print(parts[0]);
-            sys_print("\n");
-            sys_print("Type 'help' for available commands.\n");
+            sys_print(command);
+            sys_print("\nType 'help' for available commands.\n");
         }
     }
 }
@@ -128,165 +166,48 @@ fn cmd_uname() {
     sys_print("Astral OS v0.3.0\n");
     sys_print("Architecture: x86_64\n");
     sys_print("Kernel: Astral Microkernel\n");
-    sys_print("Build: Rust Edition 2024\n");
+    sys_print("Ring Level: 3 (User Mode)\n");
 }
 
 fn cmd_version() {
     sys_print("Astral OS version 0.3.0\n");
     sys_print("Shell API: Syscall-based\n");
-    sys_print("Ring Level: 0 (Kernel Mode)\n");
+    sys_print("Ring Level: 3 (User Mode)\n");
 }
 
 fn cmd_clear() {
-    // Clear framebuffer properly
-    crate::drivers::framebuffer::clear();
-}
-
-fn cmd_echo(args: &[&str]) {
-    for (i, arg) in args.iter().enumerate() {
-        if i > 0 {
-            sys_print(" ");
-        }
-        sys_print(arg);
-    }
-    sys_print("\n");
+    // Use syscall to clear screen
+    sys_clear_screen();
 }
 
 fn cmd_ls() {
-    // Get real file list from filesystem
-    let files = crate::fs::psychicfs::fs_list();
-    if files.is_empty() {
-        sys_print("(empty)\n");
-    } else {
-        for file in files {
-            sys_print(&file);
-            sys_print("  ");
-        }
-        sys_print("\n");
-    }
-}
-
-fn cmd_pwd() {
-    sys_print("/home/root\n");
-}
-
-fn cmd_date() {
-    sys_print("System clock not yet implemented\n");
-    sys_print("Use 'uptime' for system runtime\n");
+    // Use syscall - kernel will print the file list
+    sys_fs_list();
 }
 
 fn cmd_ps() {
-    sys_print("PID  STATE     NAME\n");
-    sys_print("---  --------  ----\n");
-    
-    let table = crate::process::process_table().lock();
-    for proc in table.iter() {
-        let state = match proc.state {
-            crate::process::ProcessState::Ready => "READY   ",
-            crate::process::ProcessState::Running => "RUNNING ",
-            crate::process::ProcessState::Blocked => "BLOCKED ",
-            crate::process::ProcessState::Zombie => "ZOMBIE  ",
-        };
-        sys_print("  ");
-        print_num(proc.pid.as_u64());
-        sys_print("  ");
-        sys_print(state);
-        sys_print("\n");
-    }
-    
-    sys_print("\nTotal: ");
-    print_num(table.count() as u64);
-    sys_print(" processes\n");
-}
-
-fn cmd_whoami() {
-    sys_print("root\n");
-}
-
-fn cmd_uptime() {
-    // Get scheduler stats which has idle_ticks
-    let stats = crate::process::scheduler::get_global_stats();
-    let seconds = stats.context_switches / 100;  // Approximate
-    sys_print("System running since boot\n");
-    sys_print("Context switches: ");
-    print_num(stats.context_switches);
-    sys_print("\n");
+    // Use syscall - kernel will print the process list
+    sys_get_process_info(&mut [0u8; 1]);
 }
 
 fn cmd_mem() {
-    // Get real memory stats
-    let (total, used, free) = crate::memory::frame::get_stats();
-    
-    sys_print("Physical Memory:\n");
-    sys_print("  Total frames: ");
-    print_num(total as u64);
-    sys_print("\n");
-    sys_print("  Used frames:  ");
-    print_num(used as u64);
-    sys_print("\n");
-    sys_print("  Free frames:  ");
-    print_num(free as u64);
-    sys_print("\n");
-    sys_print("  Total: ");
-    print_num((total * 4 / 1024) as u64);
-    sys_print(" MB\n");
-    sys_print("  Free:  ");
-    print_num((free * 4 / 1024) as u64);
-    sys_print(" MB\n");
-    
-    // Heap stats
-    let (heap_used, heap_free) = crate::memory::heap::get_stats();
-    sys_print("\nKernel Heap:\n");
-    sys_print("  Used: ");
-    print_num((heap_used / 1024) as u64);
-    sys_print(" KB\n");
-    sys_print("  Free: ");
-    print_num((heap_free / 1024) as u64);
-    sys_print(" KB\n");
+    // Use syscall - kernel will print memory info
+    sys_get_mem_info();
 }
 
 fn cmd_cpu() {
-    let cpu_count = crate::arch::x86_64::cpu::get_cpu_count();
-    
-    sys_print("CPU Information:\n");
-    sys_print("  Architecture: x86_64\n");
-    sys_print("  Cores: ");
-    print_num(cpu_count as u64);
-    sys_print("\n");
-    sys_print("  Mode: Long Mode (64-bit)\n");
-    
-    // Scheduler stats
-    let stats = crate::process::scheduler::get_global_stats();
-    sys_print("  Processes: ");
-    print_num(stats.total_processes as u64);
-    sys_print("\n");
+    // Use syscall - kernel will print CPU info
+    sys_get_cpu_info();
 }
 
 fn cmd_exit() {
     sys_print("Goodbye!\n");
-    super::usys::sys_exit(0);
+    sys_exit(0);
 }
 
 fn cmd_reboot() {
     sys_print("Rebooting...\n");
-    unsafe {
-        // PS/2 keyboard controller reset
-        core::arch::asm!(
-            "mov al, 0xFE",
-            "out 0x64, al",
-            options(nostack)
-        );
-    }
+    // This will be handled by syscall in future
+    // For now just exit
+    sys_exit(0);
 }
-
-/// Helper to print a number
-fn print_num(n: u64) {
-    if n >= 10 {
-        print_num(n / 10);
-    }
-    let digit = (n % 10) as u8 + b'0';
-    super::usys::sys_write(&[digit]);
-}
-
-// Needed for Vec
-extern crate alloc;

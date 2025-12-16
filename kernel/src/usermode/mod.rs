@@ -5,6 +5,7 @@
 pub mod elf;
 pub mod loader;
 pub mod spawn;
+pub mod ring3_binary;
 pub mod syscall;
 pub mod test;
 pub mod usys;

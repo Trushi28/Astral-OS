@@ -22,6 +22,7 @@ pub const SYS_WAIT4: u64 = 61;
 pub const SYS_KILL: u64 = 62;
 pub const SYS_UNAME: u64 = 63;
 pub const SYS_YIELD: u64 = 158;
+pub const SYS_GETUID: u64 = 102;
 
 // Astral OS specific syscalls (starting from 1000)
 pub const SYS_REALITY_FORK: u64 = 1000;
@@ -36,6 +37,13 @@ pub const SYS_GRAPHICS_BLIT: u64 = 2002;
 pub const SYS_GRAPHICS_PRESENT: u64 = 2003;
 pub const SYS_GRAPHICS_FILL_RECT: u64 = 2004;
 pub const SYS_GRAPHICS_GET_SCREEN_SIZE: u64 = 2005;
+
+// Shell syscalls
+pub const SYS_FS_LIST: u64 = 200;
+pub const SYS_GET_PROCESS_INFO: u64 = 201;
+pub const SYS_GET_MEM_INFO: u64 = 202;
+pub const SYS_GET_CPU_INFO: u64 = 203;
+pub const SYS_CLEAR_SCREEN: u64 = 204;
 
 /// System call result
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -78,6 +86,7 @@ pub fn handle_syscall(
         SYS_GETPID => sys_getpid(),
         SYS_FORK => sys_fork(),
         SYS_YIELD => sys_yield(),
+        SYS_GETUID => sys_getuid(),
         
         // Astral OS specific
         SYS_REALITY_FORK => sys_reality_fork(),
@@ -92,6 +101,13 @@ pub fn handle_syscall(
         SYS_GRAPHICS_PRESENT => sys_graphics_present(arg1),
         SYS_GRAPHICS_FILL_RECT => sys_graphics_fill_rect(arg1, arg2 as u32, arg3 as u32, arg4 as u32, arg5 as u32, 0xFFFFFFFF),
         SYS_GRAPHICS_GET_SCREEN_SIZE => sys_graphics_get_screen_size(),
+        
+        // Shell commands
+        SYS_FS_LIST => sys_fs_list(),
+        SYS_GET_PROCESS_INFO => sys_get_process_info(),
+        SYS_GET_MEM_INFO => sys_get_mem_info(),
+        SYS_GET_CPU_INFO => sys_get_cpu_info(),
+        SYS_CLEAR_SCREEN => sys_clear_screen(),
         
         _ => Err(SyscallError::InvalidSyscall),
     };
@@ -218,6 +234,65 @@ fn sys_fork() -> SyscallResult {
 
 fn sys_yield() -> SyscallResult {
     crate::process::scheduler::yield_cpu();
+    Ok(0)
+}
+
+fn sys_getuid() -> SyscallResult {
+    if let Some(pid) = get_current_pid() {
+        let table = crate::process::process_table().lock();
+        if let Some(proc) = table.get(pid) {
+            return Ok(proc.uid as u64);
+        }
+    }
+    // Default to strict failure if process not found
+    Err(SyscallError::PermissionDenied)
+}
+
+fn sys_fs_list() -> SyscallResult {
+    let files = crate::fs::psychicfs::fs_list();
+    crate::println!("Files:");
+    for file in files {
+        crate::println!("  {}", file);
+    }
+    Ok(0)
+}
+
+fn sys_get_process_info() -> SyscallResult {
+    crate::println!("PID | UID | State   | Priority    | Intent");
+    crate::println!("----|-----|---------|-------------|-------");
+    
+    let table = crate::process::process_table().lock();
+    for proc in table.iter() {
+        crate::println!("{:<3} | {:<3} | {:<7?} | {:<11?} | {:<11?}", 
+            proc.pid.as_u64(),
+            proc.uid,
+            proc.state,
+            proc.priority,
+            proc.intent
+        );
+    }
+    Ok(0)
+}
+
+fn sys_get_mem_info() -> SyscallResult {
+    let (total, used, free) = crate::memory::frame::get_stats();
+    crate::println!("Memory System:");
+    crate::println!("  Total: {} KB", total / 1024);
+    crate::println!("  Used:  {} KB", used / 1024);
+    crate::println!("  Free:  {} KB", free / 1024);
+    Ok(0)
+}
+
+fn sys_get_cpu_info() -> SyscallResult {
+    let count = crate::get_cpu_count();
+    crate::println!("CPU Information:");
+    crate::println!("  Cores: {}", count);
+    crate::println!("  Arch:  x86_64");
+    Ok(0)
+}
+
+fn sys_clear_screen() -> SyscallResult {
+    crate::drivers::framebuffer::clear();
     Ok(0)
 }
 

@@ -42,6 +42,7 @@ pub fn execute(command: &str, args: core::str::SplitWhitespace, theme: &mut Shel
         "net" => cmd_net(args, theme),
         "usertest" => cmd_usertest(theme),
         "spawn_test" => cmd_spawn_test(theme),
+        "ring3_shell" | "ushell" => cmd_ring3_shell(theme),
         "gui" | "desktop" => cmd_gui(theme),
         "editor" | "edit" => cmd_editor(args, theme),
         _ => {
@@ -708,6 +709,50 @@ fn cmd_spawn_test(theme: &ShellTheme) {
         }
         Err(e) => {
             print_colored(&alloc::format!("  Failed to create address space: {}\n", e), theme.error_color);
+        }
+    }
+}
+
+fn cmd_ring3_shell(theme: &ShellTheme) {
+    print_colored("=== Launching TRUE Ring 3 Shell ===\n", theme.info_color);
+    
+    // Create user address space
+    match crate::arch::x86_64::usermode::create_user_address_space() {
+        Ok((mut page_table, stack_top)) => {
+            crate::println!("  User address space created");
+            crate::println!("  Stack top: 0x{:x}", stack_top);
+            
+            // Build position-independent shell binary
+            let shell_code = crate::usermode::ring3_binary::build_ring3_shell();
+            crate::println!("  Shell binary: {} bytes", shell_code.len());
+            
+            let user_code_base = crate::arch::x86_64::usermode::USER_CODE_BASE;
+            
+            // Load shell code to user space
+            match crate::usermode::loader::load_flat_binary(&shell_code, &mut page_table, user_code_base) {
+                Ok(entry_point) => {
+                    crate::println!("  Loaded at: 0x{:x}", entry_point);
+                    
+                    // Update TSS kernel stack
+                    crate::arch::x86_64::tss::update_kernel_stack(
+                        crate::arch::x86_64::tss::get_kernel_stack()
+                    );
+                    
+                    let pt_phys = page_table.p4_physical().as_u64();
+                    print_colored("  Entering Ring 3...\n", theme.success_color);
+                    
+                    unsafe {
+                        core::arch::asm!("mov cr3, {}", in(reg) pt_phys, options(nostack));
+                        crate::arch::x86_64::usermode::enter_usermode(entry_point, stack_top);
+                    }
+                }
+                Err(e) => {
+                    print_colored(&alloc::format!("  Load failed: {}\n", e), theme.error_color);
+                }
+            }
+        }
+        Err(e) => {
+            print_colored(&alloc::format!("Failed: {}\n", e), theme.error_color);
         }
     }
 }

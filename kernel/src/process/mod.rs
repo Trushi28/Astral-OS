@@ -119,6 +119,7 @@ impl Default for ProcessIntent {
 #[derive(Clone, Copy)]
 pub struct Process {
     pub pid: Pid,
+    pub uid: u32,
     pub state: ProcessState,
     pub registers: Registers,
     pub page_table: u64,
@@ -141,6 +142,7 @@ impl Process {
     pub fn new(pid: Pid) -> Self {
         Self {
             pid,
+            uid: 0, // Default to root
             state: ProcessState::Ready,
             registers: Registers::new(),
             page_table: 0,

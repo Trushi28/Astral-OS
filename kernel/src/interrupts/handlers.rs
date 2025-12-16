@@ -597,14 +597,13 @@ extern "C" fn syscall_handler(
     arg4: u64,
     arg5: u64,
 ) -> u64 {
-    crate::serial_println!("[SYSCALL] num={} arg1={} arg2={} arg3={}", syscall, arg1, arg2, arg3);
+    crate::serial_println!("[SYSCALL] Called: num={}, arg1={}, arg2=0x{:x}, arg3={}", syscall, arg1, arg2, arg3);
     
     // Record syscall for behavior tracking
     if let Some(pid) = crate::process::get_current_pid() {
         crate::security::record_syscall(pid, syscall);
     }
     
-    // The syscall handler in arch::x86_64::syscall already handles this
-    // Just return 0 as a placeholder - actual handling is in ring3_syscall_handler
-    0
+    // Route to the real usermode syscall handler
+    crate::usermode::syscall::handle_syscall(syscall, arg1, arg2, arg3, arg4, arg5)
 }
