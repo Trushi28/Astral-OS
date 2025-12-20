@@ -16,6 +16,7 @@ pub const SYS_READ: u64 = 0;
 pub const SYS_EXIT: u64 = 60;
 pub const SYS_GETPID: u64 = 39;
 pub const SYS_YIELD: u64 = 24;
+pub const SYS_GETUID: u64 = 102;
 pub const SYS_YIELD_ALT: u64 = 158;  // Linux sched_yield syscall number
 
 // Shell-specific syscalls
@@ -163,9 +164,7 @@ extern "C" fn ring3_syscall_handler(
     _arg4: u64,
     _arg5: u64,
 ) -> u64 {
-    crate::serial_println!("[SYSCALL] Called: num={}, arg1={}, arg2={:#x}, arg3={}", 
-        syscall_num, arg1, arg2, arg3);
-    
+    // Handle syscalls silently (removed verbose logging)
     match syscall_num {
         SYS_WRITE => {
             // write(fd, buf, len)
@@ -173,26 +172,17 @@ extern "C" fn ring3_syscall_handler(
             let buf = arg2;  // User virtual address
             let len = arg3 as usize;
             
-            crate::serial_println!("[SYSCALL] SYS_WRITE: fd={}, buf=0x{:x}, len={}", fd, buf, len);
-            
             if fd == 1 && len > 0 && buf != 0 {  // stdout, valid length, non-null buffer
-                // Read the byte BEFORE calling any framebuffer code
-                let c: u8;
+                // Write ALL bytes from the buffer
                 unsafe {
-                    let user_ptr = buf as *const u8;
-                    crate::serial_println!("[SYSCALL] Reading from user ptr 0x{:x}", user_ptr as u64);
-                    c = core::ptr::read_volatile(user_ptr);
-                    crate::serial_println!("[SYSCALL] Read byte: 0x{:x} ('{}')", c, c as char);
+                    for i in 0..len {
+                        let user_ptr = (buf + i as u64) as *const u8;
+                        let c = core::ptr::read_volatile(user_ptr);
+                        crate::drivers::framebuffer::print_char(c as char, 0xFFFFFF);
+                    }
                 }
-                
-                // Now try to print to framebuffer
-                crate::serial_println!("[SYSCALL] About to print_char");
-                crate::drivers::framebuffer::print_char(c as char, 0xFFFFFF);
-                crate::serial_println!("[SYSCALL] print_char done");
-                
-                1u64  // Return 1 byte written
+                len as u64  // Return number of bytes written
             } else {
-                crate::serial_println!("[SYSCALL] SYS_WRITE: invalid args");
                 u64::MAX  // Error
             }
         }
@@ -231,7 +221,24 @@ extern "C" fn ring3_syscall_handler(
         }
         SYS_GETPID => {
             // Return current process ID
-            1  // Placeholder
+            if let Some(pid) = crate::process::get_current_pid() {
+                pid.as_u64()
+            } else {
+                1  // Fallback
+            }
+        }
+        SYS_GETUID => {
+            // Return current user ID from process
+            if let Some(pid) = crate::process::get_current_pid() {
+                let table = crate::process::process_table().lock();
+                if let Some(proc) = table.get(pid) {
+                    proc.uid as u64
+                } else {
+                    0  // Default UID
+                }
+            } else {
+                0  // Default UID
+            }
         }
         SYS_YIELD | SYS_YIELD_ALT => {
             // Yield CPU
