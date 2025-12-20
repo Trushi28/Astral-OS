@@ -21,11 +21,15 @@ pub const USER_CODE_BASE: u64 = 0x0000_0000_0040_0000;
 /// The user_stack must point to a properly mapped user stack.
 pub unsafe fn enter_usermode(entry_point: u64, user_stack: u64) {
     crate::serial_println!("[RING3] Entering user mode: RIP=0x{:x}, RSP=0x{:x}", entry_point, user_stack);
+    crate::serial_println!("[RING3] Selectors: CS=0x{:x}, SS=0x{:x}", 
+        USER_CODE_SELECTOR, USER_DATA_SELECTOR);
     
     // Prepare iretq frame on stack:
     // SS, RSP, RFLAGS, CS, RIP
     
     let rflags: u64 = 0x202;  // IF set (interrupts enabled)
+    
+    crate::serial_println!("[RING3] About to iretq...");
     
     asm!(
         // Push SS (user data selector)

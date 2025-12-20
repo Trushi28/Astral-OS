@@ -1,12 +1,15 @@
 //src/shell/mod.rs
 pub mod commands;
+pub mod hal;
 
 use alloc::vec::Vec;
 use alloc::string::String;
-use crate::interrupts::{getchar, KB_ARROW_UP, KB_ARROW_DOWN, KB_ARROW_LEFT, KB_ARROW_RIGHT};
-use crate::drivers::framebuffer::{print_colored, get_cursor_pos, set_cursor_pos, clear_line};
-use core::arch::asm;
 use alloc::string::ToString;
+use crate::interrupts::{KB_ARROW_UP, KB_ARROW_DOWN, KB_ARROW_LEFT, KB_ARROW_RIGHT};
+use core::arch::asm;
+
+// Re-export HAL for commands module
+pub use hal::{print_colored, clear_screen, get_cursor_pos, set_cursor_pos, clear_line, read_char};
 
 const MAX_CMD_LEN: usize = 256;
 const MAX_HISTORY: usize = 50;
@@ -81,32 +84,36 @@ impl Shell {
         print_colored("Modern Foundation + Reality Engine", 0x888888);
         print_colored("   ║\n", 0x00AAFF);
         print_colored("╚═══════════════════════════════════════════╝\n", 0x00AAFF);
-        crate::println!();
-        crate::println!("Welcome to Astral OS Shell");
-        crate::println!("Type 'help' for available commands");
-        crate::println!();
+        hal::println("");
+        hal::println("Welcome to Astral OS Shell");
+        hal::println("Type 'help' for available commands");
+        hal::println("");
     }
     
     pub fn print_prompt(&mut self) {
-        use crate::reality::causality::RealityId;
-        use crate::reality::dream::get_system_state;
-        
-        let reality_id = RealityId::current().as_u64();
-        let state = get_system_state();
-        
         // User mode shell prompt: user@astral
         print_colored("user", 0x00FF88);  // Username in green
         print_colored("@", 0x888888);     // @ in gray
         print_colored("astral", self.theme.prompt_color);
         
-        match state {
-            crate::reality::dream::SystemState::Dreaming => print_colored("💤", 0x9966FF),
-            crate::reality::dream::SystemState::DeepDream => print_colored("🌙", 0x6633FF),
-            _ => {}
-        }
-        
-        if reality_id != 0 {
-            crate::print!(":{}", reality_id);
+        // Reality engine features only in kernel mode
+        if hal::get_mode() == hal::HalMode::Kernel {
+            use crate::reality::causality::RealityId;
+            use crate::reality::dream::get_system_state;
+            
+            let reality_id = RealityId::current().as_u64();
+            let state = get_system_state();
+            
+            match state {
+                crate::reality::dream::SystemState::Dreaming => print_colored("💤", 0x9966FF),
+                crate::reality::dream::SystemState::DeepDream => print_colored("🌙", 0x6633FF),
+                _ => {}
+            }
+            
+            if reality_id != 0 {
+                use alloc::format;
+                hal::print(&format!(":{}", reality_id));
+            }
         }
         
         print_colored("> ", self.theme.prompt_symbol_color);
@@ -122,7 +129,7 @@ impl Shell {
         self.print_prompt();
         
         loop {
-            if let Some(key) = getchar() {
+            if let Some(key) = read_char() {
                 match key {
                     KB_ARROW_UP => {
                         self.history_up();
@@ -137,7 +144,7 @@ impl Shell {
                         self.move_cursor_right();
                     }
                     b'\n' => {
-                        crate::println!();
+                        hal::println("");
                         self.execute_command();
                         
                         if self.cmd_len > 0 {
@@ -191,7 +198,7 @@ impl Shell {
                         }
                     }
                     12 => { // Ctrl+L - Clear screen
-                        crate::drivers::framebuffer::clear();
+                        clear_screen();
                         self.print_prompt();
                         self.redraw_line();
                     }
@@ -202,13 +209,15 @@ impl Shell {
                 }
             }
             
-            // Dream cycle integration
-            use crate::reality::dream::{get_system_state, dream_cycle};
-            if get_system_state() != crate::reality::dream::SystemState::Active {
-                dream_cycle();
+            // Dream cycle integration (only in kernel mode)
+            if hal::get_mode() == hal::HalMode::Kernel {
+                use crate::reality::dream::{get_system_state, dream_cycle};
+                if get_system_state() != crate::reality::dream::SystemState::Active {
+                    dream_cycle();
+                }
             }
             
-            unsafe { asm!("hlt"); }
+            hal::yield_cpu();
         }
     }
     

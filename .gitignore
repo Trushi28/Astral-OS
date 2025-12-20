@@ -1,7 +1,7 @@
 # --- Rust ---
 /kernel/target/
 /kernel/Cargo.lock        # optional: keep if you want reproducible builds
-
+Cargo.lock
 # Rust build output fragments
 **/*.rlib
 **/*.rmeta

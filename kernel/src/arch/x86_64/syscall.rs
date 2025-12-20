@@ -28,6 +28,14 @@ pub const SYS_CLEAR_SCREEN: u64 = 204;
 pub const SYS_GET_TIME: u64 = 205;
 pub const SYS_GET_UPTIME: u64 = 206;
 
+// HAL syscalls for shell I/O
+pub const SYS_PRINT: u64 = 210;
+pub const SYS_PRINT_COLORED: u64 = 211;
+pub const SYS_READ_CHAR: u64 = 212;
+pub const SYS_GET_CURSOR: u64 = 213;
+pub const SYS_SET_CURSOR: u64 = 214;
+pub const SYS_CLEAR_LINE: u64 = 215;
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Flag to indicate user shell has exited and should return to menu
@@ -401,6 +409,59 @@ extern "C" fn ring3_syscall_handler(
             print_number_to_fb(secs);
             crate::drivers::framebuffer::print_colored(" seconds\n", 0xFFFFFF);
             secs
+        }
+        
+        // HAL syscalls for shell I/O
+        SYS_PRINT => {
+            // arg1 = string ptr, arg2 = length
+            let ptr = arg1 as *const u8;
+            let len = arg2 as usize;
+            if len < 4096 && !ptr.is_null() {
+                let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+                if let Ok(s) = core::str::from_utf8(slice) {
+                    crate::drivers::framebuffer::print(s);
+                }
+            }
+            0
+        }
+        
+        SYS_PRINT_COLORED => {
+            // arg1 = string ptr, arg2 = length, arg3 = color
+            let ptr = arg1 as *const u8;
+            let len = arg2 as usize;
+            let color = arg3 as u32;
+            if len < 4096 && !ptr.is_null() {
+                let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+                if let Ok(s) = core::str::from_utf8(slice) {
+                    crate::drivers::framebuffer::print_colored(s, color);
+                }
+            }
+            0
+        }
+        
+        SYS_READ_CHAR => {
+            // Non-blocking read - returns 0 if no char, or the char code
+            match crate::interrupts::getchar() {
+                Some(c) => c as u64,
+                None => 0,
+            }
+        }
+        
+        SYS_GET_CURSOR => {
+            // Returns cursor position packed as (x << 32) | y
+            let (x, y) = crate::drivers::framebuffer::get_cursor_pos();
+            ((x as u64) << 32) | (y as u64)
+        }
+        
+        SYS_SET_CURSOR => {
+            // arg1 = x, arg2 = y
+            crate::drivers::framebuffer::set_cursor_pos(arg1 as usize, arg2 as usize);
+            0
+        }
+        
+        SYS_CLEAR_LINE => {
+            crate::drivers::framebuffer::clear_line();
+            0
         }
         
         _ => {

@@ -2,7 +2,7 @@
 # ASTRAL OS - Limine Bootloader Makefile (Fixed)
 # ============================================================================
 
-.PHONY: all clean run debug kernel iso help limine 
+.PHONY: all clean run debug kernel iso help limine userland
 
 KERNEL_ELF := kernel/target/x86_64-astral/release/astral-kernel
 
@@ -13,6 +13,7 @@ help:
 	@echo "Astral OS Build System"
 	@echo "======================"
 	@echo "  make all/iso  - Build bootable ISO"
+	@echo "  make userland - Build Ring 3 binaries"
 	@echo "  make kernel   - Build kernel only"
 	@echo "  make run      - Build and run in QEMU"
 	@echo "  make debug    - Run with GDB server"
@@ -29,8 +30,17 @@ limine:
 		$(MAKE) -C limine; \
 	fi
 
-# Build kernel
-kernel:
+# Build userland (Ring 3 binaries)
+userland:
+	@echo "==> Building userland..."
+	cd userland && cargo +nightly build --release
+	@echo "==> Converting to flat binary..."
+	llvm-objcopy -O binary target/x86_64-userland/release/userland target/x86_64-userland/release/userland.bin
+	@echo "==> Userland built:"
+	@ls -lh target/x86_64-userland/release/userland.bin
+
+# Build kernel (depends on userland for include_bytes!)
+kernel: userland
 	@echo "==> Building kernel..."
 	cd kernel && cargo +nightly build --release
 	@echo "==> Kernel built: $(KERNEL_ELF)"

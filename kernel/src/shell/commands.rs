@@ -1,6 +1,7 @@
 //src/shell/commands.rs
 use super::ShellTheme;
-use crate::drivers::framebuffer::print_colored;
+use super::hal;
+use super::hal::print_colored;
 
 pub fn execute(command: &str, args: core::str::SplitWhitespace, theme: &mut ShellTheme) {
     match command {
@@ -716,35 +717,51 @@ fn cmd_spawn_test(theme: &ShellTheme) {
 fn cmd_ring3_shell(theme: &ShellTheme) {
     print_colored("=== Launching TRUE Ring 3 Shell ===\n", theme.info_color);
     
+    // Get the embedded userland binary
+    let shell_bin = crate::usermode::USERLAND_SHELL_BIN;
+    crate::println!("  Shell binary: {} bytes (flat)", shell_bin.len());
+    crate::serial_println!("[USHELL] Binary size: {} bytes", shell_bin.len());
+    
+    // Show first few bytes
+    if shell_bin.len() >= 4 {
+        crate::serial_println!("[USHELL] First bytes: {:02x} {:02x} {:02x} {:02x}", 
+            shell_bin[0], shell_bin[1], shell_bin[2], shell_bin[3]);
+    }
+    
     // Create user address space
     match crate::arch::x86_64::usermode::create_user_address_space() {
         Ok((mut page_table, stack_top)) => {
             crate::println!("  User address space created");
             crate::println!("  Stack top: 0x{:x}", stack_top);
+            crate::serial_println!("[USHELL] Stack top: 0x{:x}", stack_top);
             
-            // Build position-independent shell binary
-            let shell_code = crate::usermode::ring3_binary::build_ring3_shell();
-            crate::println!("  Shell binary: {} bytes", shell_code.len());
+            // User code base address (must match linker.ld)
+            let user_code_base = 0x400000u64;
+            crate::serial_println!("[USHELL] Code base: 0x{:x}", user_code_base);
             
-            let user_code_base = crate::arch::x86_64::usermode::USER_CODE_BASE;
-            
-            // Load shell code to user space
-            match crate::usermode::loader::load_flat_binary(&shell_code, &mut page_table, user_code_base) {
+            // Load flat binary to user space
+            match crate::usermode::loader::load_flat_binary(shell_bin, &mut page_table, user_code_base) {
                 Ok(entry_point) => {
                     crate::println!("  Loaded at: 0x{:x}", entry_point);
+                    crate::serial_println!("[USHELL] Entry point: 0x{:x}", entry_point);
                     
-                    // Update TSS kernel stack
+                    // Update TSS kernel stack for syscalls
                     crate::arch::x86_64::tss::update_kernel_stack(
                         crate::arch::x86_64::tss::get_kernel_stack()
                     );
                     
                     let pt_phys = page_table.p4_physical().as_u64();
+                    crate::serial_println!("[USHELL] Page table phys: 0x{:x}", pt_phys);
                     print_colored("  Entering Ring 3...\n", theme.success_color);
                     
+                    // Switch to user page table and jump to Ring 3
+                    crate::serial_println!("[USHELL] About to switch CR3 and enter Ring 3...");
                     unsafe {
                         core::arch::asm!("mov cr3, {}", in(reg) pt_phys, options(nostack));
                         crate::arch::x86_64::usermode::enter_usermode(entry_point, stack_top);
                     }
+                    
+                    // Should not reach here - user program calls exit syscall
                 }
                 Err(e) => {
                     print_colored(&alloc::format!("  Load failed: {}\n", e), theme.error_color);
@@ -755,6 +772,8 @@ fn cmd_ring3_shell(theme: &ShellTheme) {
             print_colored(&alloc::format!("Failed: {}\n", e), theme.error_color);
         }
     }
+    
+    print_colored("Returned from Ring 3\n", theme.success_color);
 }
 
 fn cmd_gui(theme: &ShellTheme) {
