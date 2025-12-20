@@ -1,4 +1,5 @@
 //src/drivers/virtio/pci.rs
+#![allow(dead_code)] // PCI register constants
 use crate::util::{inl, outl};
 
 const PCI_CONFIG_ADDR: u16 = 0xCF8;

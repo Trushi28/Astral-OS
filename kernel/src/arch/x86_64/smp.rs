@@ -15,8 +15,8 @@ pub fn init_smp() -> Result<(), &'static str> {
     crate::serial_println!("[SMP] Initializing multiprocessor support via Limine...");
     
     // Get SMP response from Limine
-    let smp_response = crate::SMP_REQUEST.get_response()
-        .ok_or("Limine SMP request not supported")?;
+    let smp_response = crate::MP_REQUEST.get_response()
+        .ok_or("Limine MP request not supported")?;
     
     let cpus = smp_response.cpus();
     let cpu_count = cpus.len();

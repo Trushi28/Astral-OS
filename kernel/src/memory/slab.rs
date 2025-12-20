@@ -1,4 +1,5 @@
 //! Slab Allocator for Astral OS
+#![allow(dead_code)] // Constants for future expansion
 //!
 //! High-performance kernel object allocator with per-CPU caches.
 //! Optimized for common allocation sizes in the kernel.

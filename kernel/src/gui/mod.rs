@@ -1,4 +1,5 @@
 //! Desktop GUI System - Interactive Windows
+#![allow(dead_code)] // GUI helper functions for future use
 //! 
 //! This module provides the user-facing desktop experience with
 //! interactive windows for file management and system info.
@@ -13,6 +14,8 @@ use alloc::string::String;
 use alloc::format;
 use spin::Mutex;
 use crate::display;
+use crate::apps::calculator::Calculator;
+use crate::apps::terminal::Terminal;
 
 static GUI_RUNNING: Mutex<bool> = Mutex::new(false);
 
@@ -68,13 +71,17 @@ pub fn run() {
     
     let client_id = display::register_client("Desktop").unwrap_or(0);
     
-    // Create windows
+    // Create initial windows
     let files_id = display::create_window(client_id, "Files", 400, 350).ok();
     let about_id = display::create_window(client_id, "About Astral", 350, 250).ok();
     let sysinfo_id = display::create_window(client_id, "System Info", 350, 280).ok();
     
-    // File browser state
+    // App state
     let mut file_browser = FileBrowser::new();
+    let mut calculator: Option<Calculator> = None;
+    let mut calc_window_id: Option<u64> = None;
+    let mut terminal: Option<Terminal> = None;
+    let mut term_window_id: Option<u64> = None;
     
     *GUI_RUNNING.lock() = true;
     
@@ -135,63 +142,137 @@ pub fn run() {
         
         last_mouse_pressed = mouse_pressed;
         
+        // Track if we need to redraw after keyboard input
+        let mut key_handled = false;
+        
         // Handle keyboard input
         if let Some(key) = crate::interrupts::getchar() {
             let focused = display::with_server(|s| s.focused_window).flatten();
             
-            match key {
-                b'q' | 27 => break,  // Quit
-                b'\t' => {
-                    display::focus_next();
-                }
-                b'c' => {
-                    if let Some(win) = focused {
-                        let _ = display::destroy_window(win);
+            // Check if focused window is an interactive app that needs all keys
+            let in_interactive_app = focused == calc_window_id || focused == term_window_id;
+            
+            // If in interactive app, send ALL keys to the app first (except ESC/q for quit)
+            if in_interactive_app && key != 27 && key != b'q' {
+                if focused == calc_window_id {
+                    if let Some(ref mut calc) = calculator {
+                        calc.handle_key(key);
+                        if let Some(id) = calc_window_id {
+                            draw_calculator(id, calc);
+                        }
+                        key_handled = true;
+                    }
+                } else if focused == term_window_id {
+                    if let Some(ref mut term) = terminal {
+                        term.handle_key(key);
+                        if let Some(id) = term_window_id {
+                            draw_terminal(id, term);
+                        }
+                        key_handled = true;
                     }
                 }
-                // File browser navigation
-                b'j' | 80 => {
-                    if focused == files_id {
-                        file_browser.move_down();
-                        if let Some(id) = files_id {
-                            draw_file_browser(id, &file_browser);
+            }
+            
+            // Global shortcuts (only if key wasn't handled by app)
+            if !key_handled {
+                match key {
+                    b'q' | 27 => break,  // Quit (ESC or q)
+                    b'\t' => {
+                        display::focus_next();
+                        key_handled = true;
+                    }
+                    
+                    // App launcher shortcuts
+                    b'1' => {
+                        // Launch Calculator
+                        if calculator.is_none() {
+                            calculator = Some(Calculator::new());
+                            calc_window_id = display::create_window(client_id, "Calculator", 280, 320).ok();
+                            if let (Some(id), Some(ref calc)) = (calc_window_id, &calculator) {
+                                draw_calculator(id, calc);
+                            }
+                        } else if let Some(id) = calc_window_id {
+                            display::focus_window(id);
+                        }
+                        key_handled = true;
+                    }
+                    b'2' => {
+                        // Launch Terminal
+                        if terminal.is_none() {
+                            terminal = Some(Terminal::new());
+                            term_window_id = display::create_window(client_id, "Terminal", 500, 350).ok();
+                            if let (Some(id), Some(ref term)) = (term_window_id, &terminal) {
+                                draw_terminal(id, term);
+                            }
+                        } else if let Some(id) = term_window_id {
+                            display::focus_window(id);
+                        }
+                        key_handled = true;
+                    }
+                    
+                    // Close window - only when NOT in interactive app
+                    b'c' => {
+                        if let Some(win) = focused {
+                            if Some(win) == calc_window_id {
+                                calculator = None;
+                                calc_window_id = None;
+                            } else if Some(win) == term_window_id {
+                                terminal = None;
+                                term_window_id = None;
+                            }
+                            let _ = display::destroy_window(win);
+                            key_handled = true;
                         }
                     }
-                }
-                b'k' | 72 => {
-                    if focused == files_id {
-                        file_browser.move_up();
-                        if let Some(id) = files_id {
-                            draw_file_browser(id, &file_browser);
+                    
+                    // File browser navigation
+                    b'j' | 80 => {
+                        if focused == files_id {
+                            file_browser.move_down();
+                            if let Some(id) = files_id {
+                                draw_file_browser(id, &file_browser);
+                            }
+                            key_handled = true;
                         }
                     }
-                }
-                b'r' => {
-                    if focused == files_id {
-                        file_browser.refresh();
-                        if let Some(id) = files_id {
-                            draw_file_browser(id, &file_browser);
+                    b'k' | 72 => {
+                        if focused == files_id {
+                            file_browser.move_up();
+                            if let Some(id) = files_id {
+                                draw_file_browser(id, &file_browser);
+                            }
+                            key_handled = true;
                         }
                     }
-                }
-                b'd' => {
-                    if focused == files_id {
-                        if let Some(filename) = file_browser.selected_file() {
-                            crate::fs::psychicfs::fs_delete(filename);
+                    b'r' => {
+                        if focused == files_id {
                             file_browser.refresh();
                             if let Some(id) = files_id {
                                 draw_file_browser(id, &file_browser);
                             }
+                            key_handled = true;
                         }
                     }
+                    b'd' => {
+                        if focused == files_id {
+                            if let Some(filename) = file_browser.selected_file() {
+                                crate::fs::psychicfs::fs_delete(filename);
+                                file_browser.refresh();
+                                if let Some(id) = files_id {
+                                    draw_file_browser(id, &file_browser);
+                                }
+                                key_handled = true;
+                            }
+                        }
+                    }
+                    
+                    _ => {}
                 }
-                _ => {}
             }
         }
         
-        // Redraw on click/release or keyboard input
-        // Mouse movement also triggers redraw (will optimize later with dirty rects)
-        let needs_redraw = mouse_moved || (mouse_pressed != last_mouse_pressed);
+        // Redraw on mouse activity OR keyboard input
+        let needs_redraw = mouse_moved || (mouse_pressed != last_mouse_pressed) || key_handled;
         
         if needs_redraw {
             display::renderer::render_frame();
@@ -403,7 +484,7 @@ fn draw_sysinfo_window(window_id: u64) {
                     font::draw_string(surface, 10, 10, "System Information", 0x00AAFF);
                     
                     // Memory info
-                    let (total, used, free) = crate::memory::frame::get_stats();
+                    let (_total, used, free) = crate::memory::frame::get_stats();
                     
                     font::draw_string(surface, 10, 40, "Memory:", 0x888888);
                     let used_str = format!("Used: {} KB", used / 1024);
@@ -488,7 +569,99 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t) as u8
 }
 
+/// Draw calculator window content
+fn draw_calculator(window_id: u64, calc: &Calculator) {
+    display::with_server(|server| {
+        if let Some(window) = server.windows.iter().find(|w| w.id == window_id) {
+            let surface_id = window.surface_id;
+            crate::graphics::with_server(|gs| {
+                if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    // Dark background
+                    let bpp = surface.format.bytes_per_pixel();
+                    for i in 0..(surface.width * surface.height) as usize {
+                        let offset = i * bpp;
+                        if offset + 3 < surface.pixels.len() {
+                            surface.pixels[offset] = 0x1a;
+                            surface.pixels[offset + 1] = 0x1a;
+                            surface.pixels[offset + 2] = 0x2e;
+                            surface.pixels[offset + 3] = 0xFF;
+                        }
+                    }
+                    
+                    // Display area (top)
+                    for y in 10..60 {
+                        for x in 10..(surface.width - 10) {
+                            let idx = ((y * surface.width + x) as usize) * bpp;
+                            if idx + 3 < surface.pixels.len() {
+                                surface.pixels[idx] = 0x20;
+                                surface.pixels[idx + 1] = 0x20;
+                                surface.pixels[idx + 2] = 0x20;
+                            }
+                        }
+                    }
+                    
+                    // Draw display value
+                    font::draw_string(surface, 15, 30, calc.display(), 0x00FF88);
+                    
+                    // Draw current operator if any
+                    if let Some(op) = calc.current_operator() {
+                        let op_str = format!(" {}", op);
+                        font::draw_string(surface, 15, 15, &op_str, 0xFFAA00);
+                    }
+                    
+                    // Button labels (visual guide)
+                    font::draw_string(surface, 15, 70, "7 8 9 /", 0xAAAAAA);
+                    font::draw_string(surface, 15, 90, "4 5 6 *", 0xAAAAAA);
+                    font::draw_string(surface, 15, 110, "1 2 3 -", 0xAAAAAA);
+                    font::draw_string(surface, 15, 130, "0 . = +", 0xAAAAAA);
+                    font::draw_string(surface, 15, 160, "C = Clear", 0x666666);
+                }
+            });
+        }
+    });
+}
+
+/// Draw terminal window content
+fn draw_terminal(window_id: u64, term: &Terminal) {
+    display::with_server(|server| {
+        if let Some(window) = server.windows.iter().find(|w| w.id == window_id) {
+            let surface_id = window.surface_id;
+            crate::graphics::with_server(|gs| {
+                if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    // Black background
+                    let bpp = surface.format.bytes_per_pixel();
+                    for i in 0..(surface.width * surface.height) as usize {
+                        let offset = i * bpp;
+                        if offset + 3 < surface.pixels.len() {
+                            surface.pixels[offset] = 0x0a;
+                            surface.pixels[offset + 1] = 0x0a;
+                            surface.pixels[offset + 2] = 0x0a;
+                            surface.pixels[offset + 3] = 0xFF;
+                        }
+                    }
+                    
+                    // Draw output lines
+                    let line_height = 16;
+                    let max_lines = ((surface.height - 40) / line_height as u32) as usize;
+                    let output = term.output_lines();
+                    let start = output.len().saturating_sub(max_lines);
+                    
+                    for (i, line) in output.iter().skip(start).enumerate() {
+                        font::draw_string(surface, 8, 8 + (i as u32 * line_height as u32), line, 0x00FF88);
+                    }
+                    
+                    // Draw input line at bottom
+                    let input_y = surface.height - 25;
+                    let prompt = format!("> {}_", term.input_line());
+                    font::draw_string(surface, 8, input_y, &prompt, 0xFFFFFF);
+                }
+            });
+        }
+    });
+}
+
 /// Check if GUI is running
 pub fn is_running() -> bool {
     *GUI_RUNNING.lock()
 }
+

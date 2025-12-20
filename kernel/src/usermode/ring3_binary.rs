@@ -1,7 +1,8 @@
 //! Embedded Ring 3 Shell Binary
+#![allow(dead_code)] // Syscall constants used in code generation
 //! Position-independent machine code for a user-mode shell
 //!
-//! Commands: h=help, l=ls, p=ps, m=mem, c=cpu, x=clear, e=exit
+//! Commands: h=help, l=ls, p=ps, m=mem, u=cpu, k=clear, q=quit
 
 extern crate alloc;
 
@@ -27,12 +28,12 @@ pub fn build_ring3_shell() -> alloc::vec::Vec<u8> {
     // Data section offset
     let data_offset: i32 = 512;
     
-    // Strings
-    let banner = b"\n=== Astral OS Ring 3 Shell ===\nCommands: help ls ps mem cpu clear exit\n\n";
+    // Strings - Fixed command letters to avoid conflicts!
+    let banner = b"\n=== Astral OS Ring 3 Shell ===\nCommands: h l p m u k q (type 'h' for help)\n\n";
     let prompt = b"ring3> ";
     let newline = b"\n";
-    let help_text = b"\nAvailable commands:\n  help  - This message\n  ls    - List files\n  ps    - Process list\n  mem   - Memory info\n  cpu   - CPU info\n  clear - Clear screen\n  exit  - Exit shell\n\n";
-    let unknown = b"Unknown command. Type 'help'\n";
+    let help_text = b"\nAvailable commands:\n  h - Help (this message)\n  l - List files\n  p - Process list\n  m - Memory info\n  u - CPU info\n  k - Clear screen\n  q - Quit shell\n\n";
+    let unknown = b"Unknown command. Type 'h' for help\n";
     
     // Data offsets
     let banner_off = data_offset;
@@ -161,30 +162,30 @@ pub fn build_ring3_shell() -> alloc::vec::Vec<u8> {
     // 'm' = mem
     let check_m = code.len();
     code.extend_from_slice(&[0x41, 0x80, 0xfc, b'm']);
-    let jne_check_c = code.len();
+    let jne_check_u = code.len();
     code.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]);
     emit_syscall(&mut code, SYS_GET_MEM_INFO);
     emit_near_jmp(&mut code, main_loop);
     
-    // 'c' = cpu
-    let check_c = code.len();
-    code.extend_from_slice(&[0x41, 0x80, 0xfc, b'c']);
-    let jne_check_x = code.len();
+    // 'u' = cpu (changed from 'c' to avoid conflict)
+    let check_u = code.len();
+    code.extend_from_slice(&[0x41, 0x80, 0xfc, b'u']);
+    let jne_check_k = code.len();
     code.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]);
     emit_syscall(&mut code, SYS_GET_CPU_INFO);
     emit_near_jmp(&mut code, main_loop);
     
-    // 'x' = clear
-    let check_x = code.len();
-    code.extend_from_slice(&[0x41, 0x80, 0xfc, b'x']);
-    let jne_check_e = code.len();
+    // 'k' = clear (changed from 'x' for consistency)
+    let check_k = code.len();
+    code.extend_from_slice(&[0x41, 0x80, 0xfc, b'k']);
+    let jne_check_q = code.len();
     code.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]);
     emit_syscall(&mut code, SYS_CLEAR_SCREEN);
     emit_near_jmp(&mut code, main_loop);
     
-    // 'e' = exit
-    let check_e = code.len();
-    code.extend_from_slice(&[0x41, 0x80, 0xfc, b'e']);
+    // 'q' = quit (changed from 'e' for clarity)
+    let check_q = code.len();
+    code.extend_from_slice(&[0x41, 0x80, 0xfc, b'q']);
     let jne_unknown = code.len();
     code.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]);
     // Exit: syscall(60, 0)
@@ -206,9 +207,9 @@ pub fn build_ring3_shell() -> alloc::vec::Vec<u8> {
     fix_jmp(&mut code, jne_check_l, check_l);
     fix_jmp(&mut code, jne_check_p, check_p);
     fix_jmp(&mut code, jne_check_m, check_m);
-    fix_jmp(&mut code, jne_check_c, check_c);
-    fix_jmp(&mut code, jne_check_x, check_x);
-    fix_jmp(&mut code, jne_check_e, check_e);
+    fix_jmp(&mut code, jne_check_u, check_u);
+    fix_jmp(&mut code, jne_check_k, check_k);
+    fix_jmp(&mut code, jne_check_q, check_q);
     fix_jmp(&mut code, jne_unknown, unknown_pos);
     
     // Pad to data

@@ -1,4 +1,5 @@
 //src/drivers/virtio/block.rs
+#![allow(dead_code)] // VirtIO block constants
 use crate::sync::IrqSpinlock;
 use super::pci::PciLocation;
 use super::queue::Virtqueue;

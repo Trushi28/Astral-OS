@@ -1,4 +1,5 @@
 // src/interrupts/handlers.rs (SMP-updated version)
+#![allow(dead_code)] // Interrupt handlers for future use
 // Key changes: Use APIC EOI instead of PIC EOI, add per-CPU tracking
 
 use core::arch::asm;

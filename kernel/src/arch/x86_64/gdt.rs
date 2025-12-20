@@ -143,10 +143,11 @@ pub fn init() {
             reserved: 0,
         };
         
-        // Setup GDT pointer
-        GDT_PTR = GdtPtr {
+        // Setup GDT pointer using raw pointer
+        let gdt_ptr_mut = &raw mut GDT_PTR;
+        (*gdt_ptr_mut) = GdtPtr {
             limit: (size_of::<Gdt>() - 1) as u16,
-            base: &GDT as *const _ as u64,
+            base: (&raw const GDT) as u64,
         };
         
         // Load GDT
@@ -162,7 +163,7 @@ pub fn init() {
 unsafe fn load_gdt() {
     core::arch::asm!(
         "lgdt [{}]",
-        in(reg) &GDT_PTR,
+        in(reg) &raw const GDT_PTR,
         options(nostack)
     );
     

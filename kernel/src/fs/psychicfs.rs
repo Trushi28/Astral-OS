@@ -1,4 +1,5 @@
 //src/fs/psychicfs.rs
+#![allow(dead_code)] // FS constants for future features
 use crate::drivers::virtio::{disk_read_sector, disk_write_sector, disk_is_present};
 use alloc::vec::Vec;
 use alloc::string::String;

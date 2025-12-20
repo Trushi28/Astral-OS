@@ -5,7 +5,6 @@ use crate::process::{Process, Pid, ProcessState, PriorityClass};
 use crate::arch::x86_64::usermode::{
     create_user_address_space, 
     enter_usermode,
-    USER_CODE_BASE,
 };
 use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use crate::arch::x86_64::tss::update_kernel_stack;

@@ -1,4 +1,5 @@
 // src/arch/x86_64/ioapic.rs
+#![allow(dead_code)] // Hardware register constants
 
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU64, Ordering};

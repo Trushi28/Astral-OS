@@ -189,9 +189,7 @@ pub fn init_gdt_and_tss() {
     }
 }
 pub fn get_gdt_ptr() -> u64 {
-    unsafe {
-        &raw const KERNEL_GDT as *const _ as u64
-    }
+    (&raw const KERNEL_GDT) as *const _ as u64
 }
 
 /// Set TSS RSP0 (kernel stack for ring 0 entry)
@@ -210,5 +208,5 @@ pub fn get_tss_rsp0() -> u64 {
 
 /// Get IDT address for debugging
 pub fn get_idt_addr() -> u64 {
-    unsafe { &raw const IDT as *const _ as u64 }
+    (&raw const IDT) as *const _ as u64
 }

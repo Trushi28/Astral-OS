@@ -1,5 +1,6 @@
 // src/arch/x86_64/apic.rs
 //! Local APIC (xAPIC and x2APIC) support
+#![allow(dead_code)] // Hardware register constants - intentionally defined for completeness
 
 use super::cpu::{rdmsr, wrmsr};
 use core::sync::atomic::{AtomicU64, Ordering};

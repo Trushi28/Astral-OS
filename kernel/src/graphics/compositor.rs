@@ -1,4 +1,5 @@
 // src/graphics/compositor.rs
+#![allow(dead_code)] // Compositor internals
 //! Hardware-accelerated compositor for Astral OS
 //!
 //! Features:

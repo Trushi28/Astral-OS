@@ -2,8 +2,7 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
-#![feature(naked_functions)]
-#![feature(const_mut_refs)]
+// Note: naked_functions and const_mut_refs are now stable
 #![feature(core_intrinsics)]
 
 extern crate alloc;
@@ -76,7 +75,7 @@ pub fn increment_timestamp() {
 
 use limine::request::{
     FramebufferRequest, HhdmRequest, MemoryMapRequest, RsdpRequest,
-    StackSizeRequest, RequestsEndMarker, RequestsStartMarker, SmpRequest
+    StackSizeRequest, RequestsEndMarker, RequestsStartMarker, MpRequest
 };
 
 // Start marker - MUST be first
@@ -104,10 +103,10 @@ pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 #[link_section = ".requests"]
 pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
-// SMP request - Limine handles AP startup
+// MP request (multiprocessor) - Limine handles AP startup
 #[used]
 #[link_section = ".requests"]
-pub static SMP_REQUEST: SmpRequest = SmpRequest::new();
+pub static MP_REQUEST: MpRequest = MpRequest::new();
 
 // Stack size request
 #[used]

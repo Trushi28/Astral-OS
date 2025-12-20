@@ -1,4 +1,5 @@
 // src/process/scheduler.rs - AstralScheduler
+#![allow(dead_code)] // Scheduler constants for future use
 //! Reality-aware scheduler for Astral OS
 //!
 //! Features:

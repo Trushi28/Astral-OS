@@ -69,19 +69,25 @@ static mut KERNEL_STACK: [u8; 16384] = [0; 16384];  // 16KB kernel stack
 
 pub fn init() {
     unsafe {
-        // Set kernel stack pointer
-        let stack_top = KERNEL_STACK.as_ptr() as u64 + KERNEL_STACK.len() as u64;
-        TSS.set_kernel_stack(stack_top);
+        // Set kernel stack pointer using raw pointers to avoid static_mut_refs warnings
+        let stack_ptr = &raw const KERNEL_STACK;
+        let stack_top = (*stack_ptr).as_ptr() as u64 + core::mem::size_of_val(&*stack_ptr) as u64;
+        
+        // Use raw pointer to access TSS
+        let tss_ptr = &raw mut TSS;
+        (*tss_ptr).set_kernel_stack(stack_top);
         
         // Set IST1 for double fault handler
-        TSS.set_ist(1, stack_top - 4096);
+        (*tss_ptr).set_ist(1, stack_top - 4096);
         
         crate::serial_println!("[TSS] Initialized with kernel stack at {:#x}", stack_top);
     }
 }
 
 pub fn get_tss_ptr() -> *const TaskStateSegment {
-    unsafe { &TSS as *const _ }
+    // Use raw pointer syntax for Rust 2024 compatibility
+    // Note: &raw const doesn't require unsafe, only dereferencing does
+    &raw const TSS
 }
 
 pub fn get_tss_size() -> usize {
@@ -94,11 +100,15 @@ pub fn get_tss_size() -> usize {
 /// syscall/interrupt handlers use the correct kernel stack.
 pub fn update_kernel_stack(kernel_stack_top: u64) {
     unsafe {
-        TSS.rsp0 = kernel_stack_top;
+        let tss_ptr = &raw mut TSS;
+        (*tss_ptr).rsp0 = kernel_stack_top;
     }
 }
 
 /// Get current kernel stack pointer
 pub fn get_kernel_stack() -> u64 {
-    unsafe { TSS.rsp0 }
+    unsafe { 
+        let tss_ptr = &raw const TSS;
+        (*tss_ptr).rsp0 
+    }
 }
