@@ -58,15 +58,15 @@ pub fn launch_user_shell() -> ! {
     // Debug: Verify user code is accessible by reading first few bytes from the physical frame
     // before switching page tables
     crate::serial_println!("[RING3] Verifying loaded user code...");
-    unsafe {
+
         // The user code was loaded at physical frame, accessible via HHDM
         // Entry point is 0x400000, first LOAD segment starts there
         // Find the physical frame for the code
-        let hhdm = crate::get_hhdm_offset();
+
         
         // We need to walk the user page table to find the physical address
         // For now, let's verify after CR3 switch by reading from the virtual address
-    }
+
     
     crate::serial_println!("[RING3] Switching to user page tables (PML4=0x{:x})", spawned.page_table_phys);
     

@@ -17,6 +17,7 @@
 - **Intent-Based Syscalls**: High-level intent resolution instead of explicit syscalls
 
 ### Memory Management
+- **Fractal Memory Architecture**: Infinite recursive memory model (Planned)
 - **Physical Frame Allocator**: Lock-free bitmap-based allocator supporting up to 4GB RAM
 - **Page Table Manager**: Full 4-level paging with recursive mapping
 - **Kernel Heap**: Proper linked-list allocator with coalescing (100MB default)
@@ -29,6 +30,7 @@
 - **SMP Support**: Multi-core processing with per-CPU run queues
 - **Full Context Switching**: Complete register preservation including FPU state
 - **Process Isolation**: Per-process page tables with kernel/user separation
+- **Ring 3 Userspace**: True user-mode execution with separating kernel/user stacks
 
 ### Filesystem
 - **Virtual Filesystem (VFS)**: Unified interface for all filesystem operations
@@ -100,7 +102,8 @@ Astral OS
 │   ├── Desktop Environment
 │   └── Window Manager
 └── Shell
-    └── Interactive command interface
+    ├── Ring 3 User Shell (userland/src/main.rs)
+    └── Ring 0 Debug Shell (kernel/src/shell/)
 ```
 
 ---
@@ -158,9 +161,9 @@ make run-disk
 4. Reality engine initialized (root reality = 0)
 5. Interrupts enabled (timer + keyboard)
 6. VirtIO disk detected and initialized
-7. Shell starts
+7. Shell starts (User-mode by default)
 
-### Shell Commands
+### Shell Commands (Ring 3)
 
 #### System Commands
 ```bash
@@ -282,7 +285,6 @@ timeline show         # Shows branch count
 ## 🐛 Known Issues & Limitations
 
 ### Current Limitations
-- **Partial userspace**: Syscall-based shell (Ring 0 with syscall API)
 - **Limited processes**: Max 256 processes
 - **Basic networking**: TCP state machine stub only
 
@@ -295,11 +297,10 @@ timeline show         # Shows branch count
 - ✅ **Double-buffered Compositor** - Tear-free rendering
 - ✅ **Synchronization Primitives** - Semaphore, Condvar, Barrier, Once
 - ✅ **Desktop GUI Environment** - Window manager with mouse support
-- ✅ **Syscall-based User Shell** - Shell using syscall API for I/O
+- ✅ **Ring 3 Userspace** - True user-mode shell loaded from ELF
 - ✅ **Real System Info** - mem, ps, cpu show live kernel data
 
 ### Planned Features (Not Yet Implemented)
-- ⏳ True Ring 3 userspace (ELF loader)
 - ❌ Full TCP/IP network stack
 - ❌ Self-rewriting kernel
 - ❌ Parallel-reality execution (only tracking)
@@ -346,121 +347,34 @@ Astral-OS/
 │   ├── linker.ld
 │   ├── src
 │   │   ├── acpi
-│   │   │   ├── madt.rs
-│   │   │   └── mod.rs
 │   │   ├── apps
-│   │   │   ├── editor.rs
-│   │   │   └── mod.rs
 │   │   ├── arch
-│   │   │   ├── mod.rs
-│   │   │   └── x86_64
-│   │   │       ├── apic.rs
-│   │   │       ├── ap_trampoline.s
-│   │   │       ├── cpu.rs
-│   │   │       ├── gdt.rs
-│   │   │       ├── ioapic.rs
-│   │   │       ├── mod.rs
-│   │   │       ├── smp.rs
-│   │   │       ├── syscall.rs
-│   │   │       ├── tss.rs
-│   │   │       └── usermode.rs
 │   │   ├── auth
-│   │   │   ├── login.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── session.rs
-│   │   │   └── users.rs
 │   │   ├── boot
-│   │   │   ├── menu.rs
-│   │   │   └── mod.rs
 │   │   ├── display
-│   │   │   ├── cursor.rs
-│   │   │   ├── mod.rs
-│   │   │   └── renderer.rs
 │   │   ├── drivers
-│   │   │   ├── framebuffer.rs
-│   │   │   ├── keyboard.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── mouse.rs
-│   │   │   ├── rtc.rs
-│   │   │   ├── serial.rs
-│   │   │   └── virtio
-│   │   │       ├── block.rs
-│   │   │       ├── mod.rs
-│   │   │       ├── net.rs
-│   │   │       ├── pci.rs
-│   │   │       └── queue.rs
 │   │   ├── fs
-│   │   │   ├── mod.rs
-│   │   │   ├── psychicfs.rs
-│   │   │   └── vfs.rs
 │   │   ├── graphics
-│   │   │   ├── compositor.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── protocol.rs
-│   │   │   └── surface.rs
 │   │   ├── gui
-│   │   │   ├── desktop.rs
-│   │   │   ├── font.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── theme.rs
-│   │   │   └── window.rs
 │   │   ├── interrupts
-│   │   │   ├── handlers.rs
-│   │   │   ├── idt.rs
-│   │   │   ├── mod.rs
-│   │   │   └── pic.rs
 │   │   ├── ipc
-│   │   │   └── mod.rs
 │   │   ├── lib.rs
 │   │   ├── main.rs
 │   │   ├── memory
-│   │   │   ├── fractal.rs
-│   │   │   ├── frame.rs
-│   │   │   ├── heap.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── paging.rs
-│   │   │   └── slab.rs
 │   │   ├── network
-│   │   │   ├── arp.rs
-│   │   │   ├── device.rs
-│   │   │   ├── ethernet.rs
-│   │   │   ├── ip.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── socket.rs
-│   │   │   ├── tcp.rs
-│   │   │   └── udp.rs
 │   │   ├── power
-│   │   │   └── mod.rs
 │   │   ├── process
-│   │   │   ├── context.rs
-│   │   │   ├── mod.rs
-│   │   │   └── scheduler.rs
 │   │   ├── reality
-│   │   │   ├── causality.rs
-│   │   │   ├── dream.rs
-│   │   │   ├── intent.rs
-│   │   │   └── mod.rs
 │   │   ├── security
-│   │   │   ├── capability.rs
-│   │   │   ├── intent.rs
-│   │   │   ├── mod.rs
-│   │   │   └── sandbox.rs
 │   │   ├── shell
-│   │   │   ├── commands.rs
-│   │   │   └── mod.rs
 │   │   ├── sync
-│   │   │   └── mod.rs
 │   │   ├── usermode
-│   │   │   ├── elf.rs
-│   │   │   ├── launcher.rs
-│   │   │   ├── loader.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── shell.rs
-│   │   │   ├── syscall.rs
-│   │   │   ├── test.rs
-│   │   │   └── usys.rs
 │   │   └── util.rs
 │   └── x86_64-astral.json
+├── userland
+│   ├── Cargo.toml
+│   └── src
+│       └── main.rs
 ├── limine.conf
 ├── Makefile
 └── Readme.md
@@ -470,43 +384,42 @@ Astral-OS/
 
 ## 🤝 Contributing
 
-Contributions welcome! Areas needing work:
+ Contributions welcome! Areas needing work:
 
-1. **True Ring 3 Userspace** - ELF loader for user binaries
-2. **Network Stack** - TCP/IP implementation
-3. **More Filesystems** - ext2, FAT32 support
-4. **GUI Improvements** - More applications, themes
-5. **AstralScript** - Custom scripting language
+ 1. **Network Stack** - TCP/IP implementation
+ 2. **More Filesystems** - ext2, FAT32 support
+ 3. **GUI Improvements** - More applications, themes
+ 4. **AstralScript** - Custom scripting language
 
----
+ ---
 
-## 📜 License
+ ## 📜 License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+ MIT License - see [LICENSE](LICENSE) file for details.
 
----
+ ---
 
-## 🙏 Acknowledgments
+ ## 🙏 Acknowledgments
 
-- **Limine Bootloader**: Modern, spec-compliant bootloader
-- **OSDev Community**: Invaluable documentation and support
-- **Fontdue**: Pure-Rust TrueType rasterization
-- **Rust Team**: Amazing language and tooling
+ - **Limine Bootloader**: Modern, spec-compliant bootloader
+ - **OSDev Community**: Invaluable documentation and support
+ - **Fontdue**: Pure-Rust TrueType rasterization
+ - **Rust Team**: Amazing language and tooling
 
----
+ ---
 
-## 📞 Contact
+ ## 📞 Contact
 
-**Project**: Astral OS  
-**Version**: 0.3.1  
-**Architecture**: x86_64 (SMP)  
-**Bootloader**: Limine v8.x
+ **Project**: Astral OS  
+ **Version**: 0.3.1  
+ **Architecture**: x86_64 (SMP)  
+ **Bootloader**: Limine v8.x
 
-For questions, issues, or contributions, please open an issue on GitHub.
+ For questions, issues, or contributions, please open an issue on GitHub.
 
----
-**Note: This is the modular version of Astral OS. The single-file “godfile” version is available in the Godfile-Version branch.**
+ ---
+ **Note: This is the modular version of Astral OS. The single-file “godfile” version is available in the Godfile-Version branch.**
 
-**Note: This OS is a hybrid one so it has some normal features as well as complex and bootable in BIOS & UEFI 64 and about RISC-V is not yet made for it**
+ **Note: This OS is a hybrid one so it has some normal features as well as complex and bootable in BIOS & UEFI 64 and about RISC-V is not yet made for it**
 
-**Built with 🦀 Rust and ☕ caffeine**
+ **Built with 🦀 Rust and ☕ caffeine**

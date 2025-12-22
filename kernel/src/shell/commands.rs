@@ -1,6 +1,6 @@
 //src/shell/commands.rs
 use super::ShellTheme;
-use super::hal;
+
 use super::hal::print_colored;
 
 pub fn execute(command: &str, args: core::str::SplitWhitespace, theme: &mut ShellTheme) {

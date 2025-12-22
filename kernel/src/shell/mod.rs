@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
 use crate::interrupts::{KB_ARROW_UP, KB_ARROW_DOWN, KB_ARROW_LEFT, KB_ARROW_RIGHT};
-use core::arch::asm;
+
 
 // Re-export HAL for commands module
 pub use hal::{print_colored, clear_screen, get_cursor_pos, set_cursor_pos, clear_line, read_char};
@@ -97,23 +97,21 @@ impl Shell {
         print_colored("astral", self.theme.prompt_color);
         
         // Reality engine features only in kernel mode
-        if hal::get_mode() == hal::HalMode::Kernel {
-            use crate::reality::causality::RealityId;
-            use crate::reality::dream::get_system_state;
-            
-            let reality_id = RealityId::current().as_u64();
-            let state = get_system_state();
-            
-            match state {
-                crate::reality::dream::SystemState::Dreaming => print_colored("💤", 0x9966FF),
-                crate::reality::dream::SystemState::DeepDream => print_colored("🌙", 0x6633FF),
-                _ => {}
-            }
-            
-            if reality_id != 0 {
-                use alloc::format;
-                hal::print(&format!(":{}", reality_id));
-            }
+        use crate::reality::causality::RealityId;
+        use crate::reality::dream::get_system_state;
+        
+        let reality_id = RealityId::current().as_u64();
+        let state = get_system_state();
+        
+        match state {
+            crate::reality::dream::SystemState::Dreaming => print_colored("💤", 0x9966FF),
+            crate::reality::dream::SystemState::DeepDream => print_colored("🌙", 0x6633FF),
+            _ => {}
+        }
+        
+        if reality_id != 0 {
+            use alloc::format;
+            hal::print(&format!(":{}", reality_id));
         }
         
         print_colored("> ", self.theme.prompt_symbol_color);
@@ -168,7 +166,7 @@ impl Shell {
                         self.history_index = None;
                         self.print_prompt();
                     }
-                    8 | 127 => {
+                    8 => {
                         self.handle_backspace();
                     }
                     0x7F => { // Delete key
@@ -210,11 +208,9 @@ impl Shell {
             }
             
             // Dream cycle integration (only in kernel mode)
-            if hal::get_mode() == hal::HalMode::Kernel {
-                use crate::reality::dream::{get_system_state, dream_cycle};
-                if get_system_state() != crate::reality::dream::SystemState::Active {
-                    dream_cycle();
-                }
+            use crate::reality::dream::{get_system_state, dream_cycle};
+            if get_system_state() != crate::reality::dream::SystemState::Active {
+                dream_cycle();
             }
             
             hal::yield_cpu();

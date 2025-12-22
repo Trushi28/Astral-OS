@@ -7,8 +7,6 @@ pub mod loader;
 pub mod spawn;
 pub mod syscall;
 pub mod test;
-pub mod usys;
-pub mod shell;
 pub mod launcher;
 
 /// Embedded userland shell ELF binary (built separately)
