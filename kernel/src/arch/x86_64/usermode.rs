@@ -7,7 +7,9 @@ use crate::memory::{PageTableManager, VirtAddr, PhysAddr, PageTableEntry};
 use crate::memory::frame::allocate_frame;
 
 /// User stack configuration
-pub const USER_STACK_BASE: u64 = 0x0000_7FFF_FFFF_0000;
+/// Stack grows downward, so we place it near the top of user space
+/// but ensure stack_top stays within canonical user addresses (< 0x7FFFFFFFFFFF)
+pub const USER_STACK_BASE: u64 = 0x0000_7FFF_FFE0_0000;  // Base of stack region
 pub const USER_STACK_SIZE: usize = 0x10000;  // 64KB (16 pages)
 pub const USER_STACK_PAGES: usize = USER_STACK_SIZE / crate::PAGE_SIZE;
 
@@ -19,39 +21,52 @@ pub const USER_CODE_BASE: u64 = 0x0000_0000_0040_0000;
 /// # Safety
 /// The target address must be valid user-mode code.
 /// The user_stack must point to a properly mapped user stack.
-pub unsafe fn enter_usermode(entry_point: u64, user_stack: u64) {
+pub unsafe fn enter_usermode(entry_point: u64, user_stack: u64) -> ! {
     crate::serial_println!("[RING3] Entering user mode: RIP=0x{:x}, RSP=0x{:x}", entry_point, user_stack);
     crate::serial_println!("[RING3] Selectors: CS=0x{:x}, SS=0x{:x}", 
         USER_CODE_SELECTOR, USER_DATA_SELECTOR);
     
-    // Prepare iretq frame on stack:
-    // SS, RSP, RFLAGS, CS, RIP
-    
-    let rflags: u64 = 0x202;  // IF set (interrupts enabled)
-    
     crate::serial_println!("[RING3] About to iretq...");
     
+    // iretq expects this stack layout (from high to low address):
+    //   SS      (8 bytes)
+    //   RSP     (8 bytes)  
+    //   RFLAGS  (8 bytes)
+    //   CS      (8 bytes)
+    //   RIP     (8 bytes)
+    
+    let ss = USER_DATA_SELECTOR as u64;
+    let cs = USER_CODE_SELECTOR as u64;
+    let rflags: u64 = 0x202;  // IF set (interrupts enabled)
+    
+    // Ensure these values are loaded into registers BEFORE the pushes
+    // to avoid any register allocation issues
     asm!(
-        // Push SS (user data selector)
-        "push {ss}",
-        // Push user RSP
-        "push {rsp_user}",
-        // Push RFLAGS
-        "push {rflags}",
-        // Push CS (user code selector) 
-        "push {cs}",
-        // Push RIP (entry point)
-        "push {rip}",
-        // Jump to Ring 3
+        // Disable interrupts during the transition
+        "cli",
+        // Save values to known registers
+        "mov r10, {entry}",
+        "mov r11, {stack}",
+        "mov r12, {cs_val}",
+        "mov r13, {ss_val}",
+        "mov r14, {flags}",
+        // Build iretq frame on current stack
+        "push r13",      // SS
+        "push r11",      // User RSP
+        "push r14",      // RFLAGS
+        "push r12",      // CS
+        "push r10",      // RIP (entry point)
+        // Return to Ring 3
         "iretq",
-        ss = in(reg) USER_DATA_SELECTOR as u64,
-        rsp_user = in(reg) user_stack,
-        rflags = in(reg) rflags,
-        cs = in(reg) USER_CODE_SELECTOR as u64,
-        rip = in(reg) entry_point,
+        entry = in(reg) entry_point,
+        stack = in(reg) user_stack,
+        cs_val = in(reg) cs,
+        ss_val = in(reg) ss,
+        flags = in(reg) rflags,
         options(noreturn)
     );
 }
+
 
 /// Initialize Ring 3 support
 pub fn init() {

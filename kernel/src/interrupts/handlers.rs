@@ -163,19 +163,34 @@ extern "C" fn stack_segment_fault_handler(error_code: u64) {
 
 #[no_mangle]
 extern "C" fn general_protection_fault_handler(error_code: u64) {
-    // Get RIP from stack if possible - the return address is at a known offset
+    // Get RIP and CS from the interrupt frame
+    // Stack layout after exception_with_error_wrapper + call:
+    //   rsp+0:   return address (pushed by call instruction)
+    //   rsp+8:   r11 (pushed by wrapper)
+    //   rsp+16:  r10
+    //   rsp+24:  r9
+    //   rsp+32:  r8
+    //   rsp+40:  rdi
+    //   rsp+48:  rsi
+    //   rsp+56:  rdx
+    //   rsp+64:  rcx
+    //   rsp+72:  rax
+    //   rsp+80:  error_code (pushed by CPU)
+    //   rsp+88:  RIP
+    //   rsp+96:  CS
+    //   rsp+104: RFLAGS
+    //   rsp+112: RSP
+    //   rsp+120: SS
     let rip: u64;
     let cs: u64;
     unsafe {
-        // After the exception, the stack contains: [return addr, error_code, RIP, CS, RFLAGS, RSP, SS]
-        // We need to find RIP from the interrupt frame
         asm!(
-            "mov {}, [rsp + 8]",  // RIP is after error code on stack
+            "mov {}, [rsp + 88]",  // RIP
             out(reg) rip,
             options(nostack)
         );
         asm!(
-            "mov {}, [rsp + 16]",  // CS is after RIP
+            "mov {}, [rsp + 96]",  // CS
             out(reg) cs,
             options(nostack)
         );

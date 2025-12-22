@@ -63,7 +63,7 @@ pub extern "C" fn _start() -> ! {
     }
     
     // IMPORTANT: Initialize memory FIRST - ACPI parsing uses heap allocation!
-    serial_println(b"[1/10] Initializing memory management...");
+    serial_println(b"[1/11] Initializing memory management...");
     memory::init();
     serial_println(b"[BOOT] Memory initialized");
     
@@ -151,16 +151,16 @@ pub extern "C" fn _start() -> ! {
     // Disable legacy PIC now that APIC is working
     serial_println(b"[BOOT] Disabling legacy PIC...");
     disable_legacy_pic();
-    serial_println(b"[2/10] Initializing framebuffer...");
+    serial_println(b"[2/11] Initializing framebuffer...");
     
     // Now it's safe to access framebuffer properties
-    serial_println(b"[2/10] Accessing framebuffer properties...");
+    serial_println(b"[2/11] Accessing framebuffer properties...");
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
         if let Some(fb) = fb_resp.framebuffers().next() {
-            serial_print(b"[1/10]   Address: 0x");
+            serial_print(b"[1/11]   Address: 0x");
             serial_print_hex(fb.addr() as *const u8 as u64);
             serial_println(b"");
-            serial_print(b"[1/10]   Size: ");
+            serial_print(b"[1/11]   Size: ");
             serial_print_dec(fb.width() as u64);
             serial_print(b"x");
             serial_print_dec(fb.height() as u64);
@@ -169,18 +169,18 @@ pub extern "C" fn _start() -> ! {
     }
     
     drivers::framebuffer::init();
-    serial_println(b"[2/10] Framebuffer initialized");
+    serial_println(b"[2/11] Framebuffer initialized");
     
-    serial_println(b"[2/10] Clearing screen...");
+    serial_println(b"[2/11] Clearing screen...");
     drivers::framebuffer::clear();
-    serial_println(b"[1/10] Screen cleared");
+    serial_println(b"[1/11] Screen cleared");
     
-    serial_println(b"[2/10] Testing framebuffer output...");
+    serial_println(b"[2/11] Testing framebuffer output...");
     drivers::framebuffer::print("TEST ");
-    serial_println(b"[2/10] Basic print works");
+    serial_println(b"[2/11] Basic print works");
     
     // Boot banner
-    serial_println(b"[2/10] Printing banner...");
+    serial_println(b"[2/11] Printing banner...");
     drivers::framebuffer::print_colored("+===========================================+\n", 0x00AAFF);   
     drivers::framebuffer::print_colored("|      ", 0x00AAFF);
     drivers::framebuffer::print_colored("ASTRAL OS", 0xFFFFFF);
@@ -190,64 +190,64 @@ pub extern "C" fn _start() -> ! {
     drivers::framebuffer::print_colored("   |\n", 0x00AAFF);
     drivers::framebuffer::print_colored("+===========================================+\n", 0x00AAFF);
     println!();
-    serial_println(b"[1/10] Banner printed");
+    serial_println(b"[1/11] Banner printed");
     
     // Initialize memory subsystem
     serial_println(b"");
     
     
-    serial_println(b"[2/10] Memory initialized");
+    serial_println(b"[2/11] Memory initialized");
     
     // Test heap allocation
-    serial_println(b"[2/10] Testing heap allocation...");
+    serial_println(b"[2/11] Testing heap allocation...");
     {
         use alloc::vec::Vec;
         let test_vec = Vec::from([1u32, 2, 3]);
-        serial_print(b"[2/10] Heap test: Vec with ");
+        serial_print(b"[2/11] Heap test: Vec with ");
         serial_print_dec(test_vec.len() as u64);
         serial_println(b" elements - OK");
     }
     
     // Initialize Reality Engine (needs heap)
     serial_println(b"");
-    serial_println(b"[3/10] Initializing Reality Engine...");
-    println!("[3/10] Reality Engine...");
+    serial_println(b"[3/11] Initializing Reality Engine...");
+    println!("[3/11] Reality Engine...");
     
     reality::init();
     
     let root_reality = reality::causality::RealityId::root();
     reality::causality::set_current_reality(root_reality);
     println!("      Root Reality: {}", root_reality.as_u64());
-    serial_print(b"[3/10] Reality Engine initialized, root reality: ");
+    serial_print(b"[3/11] Reality Engine initialized, root reality: ");
     serial_print_dec(root_reality.as_u64());
     serial_println(b"");
     
     // Initialize interrupts
     serial_println(b"");
-    serial_println(b"[4/10] Initializing interrupts...");
-    println!("[4/10] Interrupts...");
+    serial_println(b"[4/11] Initializing interrupts...");
+    println!("[4/11] Interrupts...");
     
     interrupts::init();
     
-    serial_println(b"[4/10] Interrupts enabled");
+    serial_println(b"[4/11] Interrupts enabled");
     
     // Initialize drivers
     serial_println(b"");
-    serial_println(b"[5/10] Initializing drivers...");
-    println!("[5/10] Drivers...");
+    serial_println(b"[5/11] Initializing drivers...");
+    println!("[5/11] Drivers...");
     
     drivers::init();
     
-    serial_println(b"[5/10] Drivers initialized");
+    serial_println(b"[5/11] Drivers initialized");
     
     // Test allocator
     serial_println(b"");
-    serial_println(b"[6/10] Testing allocator...");
-    println!("[6/10] Testing allocator...");
+    serial_println(b"[6/11] Testing allocator...");
+    println!("[6/11] Testing allocator...");
     
     test_allocator();
     
-    serial_println(b"[6/10] Allocator tests passed");
+    serial_println(b"[6/11] Allocator tests passed");
     
     // Success banner
     serial_println(b"");
@@ -263,8 +263,8 @@ pub extern "C" fn _start() -> ! {
     println!();
     
     serial_println(b"");
-    serial_println(b"[10/10] Initializing graphics server...");
-    println!("[10/10] Graphics server...");
+    serial_println(b"[7/11] Initializing graphics server...");
+    println!("[7/11] Graphics server...");
 
     // Initialize graphics server
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
@@ -281,18 +281,18 @@ pub extern "C" fn _start() -> ! {
     // Create security context for kernel
     crate::security::create_trusted_context(crate::process::Pid::new());
     serial_println(b"");
-    serial_println(b"[11/11] Initializing network stack...");
-    println!("[11/11] Network stack...");
+    serial_println(b"[8/11] Initializing network stack...");
+    println!("[8/11] Network stack...");
 
     crate::network::init();
     
     // Initialize Ring 3 user-mode support (TSS, GDT, syscalls)
-    serial_println(b"[12/14] Initializing Ring 3 support...");
-    println!("[12/14] Ring 3 user-mode...");
+    serial_println(b"[9/11] Initializing Ring 3 support...");
+    println!("[9/11] Ring 3 user-mode...");
     crate::arch::x86_64::usermode::init();
     
     // Initialize authentication system
-    serial_println(b"[13/14] Initializing authentication...");
+    serial_println(b"[10/11] Initializing authentication...");
     println!("[13/14] Authentication system...");
     crate::auth::users::init();
     

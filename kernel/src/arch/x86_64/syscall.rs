@@ -52,30 +52,48 @@ pub fn clear_shell_exit() {
 }
 
 /// Per-CPU data for syscall handling
+/// Each CPU needs its own syscall stack to avoid corruption
 #[repr(C)]
-struct CpuData {
-    user_rsp: u64,      // Offset 0: User stack pointer
-    kernel_rsp: u64,    // Offset 8: Kernel stack pointer
+pub struct CpuSyscallData {
+    pub user_rsp: u64,      // Offset 0: User stack pointer (saved on syscall entry)
+    pub kernel_rsp: u64,    // Offset 8: Kernel stack pointer
+    pub stack: [u8; 16384], // Per-CPU syscall stack
 }
 
-static mut CPU_DATA: CpuData = CpuData {
+// Maximum number of CPUs supported
+const MAX_CPUS: usize = 8;
+
+/// Per-CPU syscall data array - each CPU gets its own entry
+/// The GS base is set to point to the appropriate entry for each CPU
+static mut CPU_SYSCALL_DATA: [CpuSyscallData; MAX_CPUS] = [const { CpuSyscallData {
     user_rsp: 0,
     kernel_rsp: 0,
-};
+    stack: [0; 16384],
+} }; MAX_CPUS];
 
-/// Initialize syscall MSRs
+/// Initialize syscall MSRs for the current CPU
 pub fn init() {
+    init_for_cpu(0);
+}
+
+/// Initialize syscall MSRs for a specific CPU
+pub fn init_for_cpu(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS {
+        crate::serial_println!("[SYSCALL] CPU {} exceeds MAX_CPUS, using CPU 0 data", cpu_id);
+        return init_for_cpu(0);
+    }
+    
     unsafe {
-        // Setup kernel stack for CPU data using raw pointers
-        static mut SYSCALL_STACK: [u8; 16384] = [0; 16384];
-        let stack_ptr = &raw const SYSCALL_STACK;
-        let stack_top = (*stack_ptr).as_ptr() as u64 + 16384;
+        // Get this CPU's syscall data
+        let cpu_data_ptr = &raw mut CPU_SYSCALL_DATA[cpu_id];
         
-        let cpu_data_ptr = &raw mut CPU_DATA;
+        // Set kernel stack pointer to top of this CPU's stack
+        let stack_top = (*cpu_data_ptr).stack.as_ptr() as u64 + 16384;
         (*cpu_data_ptr).kernel_rsp = stack_top;
         
-        // Set IA32_KERNEL_GS_BASE to point to CPU_DATA (raw pointer)
-        wrmsr(IA32_KERNEL_GS_BASE, (&raw const CPU_DATA) as u64);
+        // Set IA32_KERNEL_GS_BASE to point to this CPU's data
+        // swapgs will load this into GS.base on syscall entry
+        wrmsr(IA32_KERNEL_GS_BASE, cpu_data_ptr as u64);
         
         // Enable syscall/sysret by setting EFER.SCE (bit 0)
         let efer = rdmsr(IA32_EFER);
@@ -95,8 +113,8 @@ pub fn init() {
         // FMASK: Flags to clear on syscall (disable interrupts)
         wrmsr(IA32_FMASK, 0x200);  // Clear IF
         
-        crate::serial_println!("[SYSCALL] MSRs configured, EFER.SCE enabled, GS base = {:#x}", 
-            (&raw const CPU_DATA) as u64);
+        crate::serial_println!("[SYSCALL] CPU {} configured, GS base = {:#x}", 
+            cpu_id, cpu_data_ptr as u64);
     }
 }
 
@@ -192,7 +210,10 @@ extern "C" fn ring3_syscall_handler(
     _arg4: u64,
     _arg5: u64,
 ) -> u64 {
-    // Handle syscalls silently (removed verbose logging)
+    // TEMPORARILY DISABLED: Trace syscalls - testing if serial output causes corruption
+    // crate::serial_println!("[SYSCALL] num={} arg1=0x{:x} arg2=0x{:x} arg3=0x{:x}", 
+    //     syscall_num, arg1, arg2, arg3);
+    
     match syscall_num {
         SYS_WRITE => {
             // write(fd, buf, len)
@@ -430,11 +451,16 @@ extern "C" fn ring3_syscall_handler(
             let ptr = arg1 as *const u8;
             let len = arg2 as usize;
             let color = arg3 as u32;
-            if len < 4096 && !ptr.is_null() {
-                let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-                if let Ok(s) = core::str::from_utf8(slice) {
-                    crate::drivers::framebuffer::print_colored(s, color);
-                }
+            
+            // SAFETY: Limit length to prevent stack smash from corrupted args
+            const MAX_PRINT_LEN: usize = 256;
+            if len > MAX_PRINT_LEN || ptr.is_null() {
+                return u64::MAX; // Error - corrupted args or bad pointer
+            }
+            
+            let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+            if let Ok(s) = core::str::from_utf8(slice) {
+                crate::drivers::framebuffer::print_colored(s, color);
             }
             0
         }

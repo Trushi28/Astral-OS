@@ -4,7 +4,7 @@
 
 .PHONY: all clean run debug kernel iso help limine userland
 
-KERNEL_ELF := kernel/target/x86_64-astral/release/astral-kernel
+KERNEL_ELF := target/x86_64-astral/release/astral-kernel
 
 # Default target
 all: iso
@@ -30,14 +30,13 @@ limine:
 		$(MAKE) -C limine; \
 	fi
 
-# Build userland (Ring 3 binaries)
+# Build userland (Ring 3 binaries as ELF)
 userland:
-	@echo "==> Building userland..."
+	@echo "==> Building userland ELF binaries..."
 	cd userland && cargo +nightly build --release
-	@echo "==> Converting to flat binary..."
-	llvm-objcopy -O binary target/x86_64-userland/release/userland target/x86_64-userland/release/userland.bin
-	@echo "==> Userland built:"
-	@ls -lh target/x86_64-userland/release/userland.bin
+	@echo "==> Userland ELF built:"
+	@ls -lh target/x86_64-userland/release/userland
+	@file target/x86_64-userland/release/userland
 
 # Build kernel (depends on userland for include_bytes!)
 kernel: userland
@@ -114,12 +113,20 @@ run-disk: iso disk-img
 		-serial stdio \
 		-boot d
 
-# Create disk image if it doesn't exist
+# Create disk image if it doesn't exist (512MB for userland binaries)
 disk-img:
 	@if [ ! -f astral-disk.img ]; then \
-		echo "==> Creating 64MB disk image..."; \
-		qemu-img create -f raw astral-disk.img 64M; \
+		echo "==> Creating 512MB disk image..."; \
+		qemu-img create -f raw astral-disk.img 512M; \
 	fi
+
+# Copy userland binaries to disk (for filesystem loading)
+copy-userland: userland disk-img
+	@echo "==> Copying userland binaries to disk..."
+	@# The shell binary will be loaded from PsychicFS at runtime
+	@# For now, we embed it in the kernel - filesystem loading requires
+	@# PsychicFS to be mounted first and the binary written to it
+	@echo "==> Userland binaries ready for filesystem integration"
 
 # Run with UEFI (if you have OVMF)
 run-uefi: iso
@@ -139,6 +146,7 @@ debug: iso
 	qemu-system-x86_64 \
 		-cdrom astral.iso \
 		-m 512M \
+		-smp 4 \
 		-serial stdio \
 		-no-reboot \
 		-s -S
@@ -146,7 +154,7 @@ debug: iso
 # Clean
 clean:
 	@echo "==> Cleaning..."
-	cd kernel && cargo clean
+	cargo clean
 	rm -rf iso_root astral.iso qemu.log
 	@echo "==> Done"
 

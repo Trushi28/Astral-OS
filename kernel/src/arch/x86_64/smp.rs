@@ -106,21 +106,24 @@ unsafe extern "C" fn ap_entry(cpu_info: &limine::mp::Cpu) -> ! {
     crate::interrupts::idt::init_gdt_and_tss();
     crate::interrupts::idt::init_idt();
     
-    // Initialize Local APIC
-    if let Err(e) = super::apic::init_apic() {
-        crate::serial_println!("[SMP] CPU {} APIC init failed: {}", cpu_id_val, e);
-    }
+    // Initialize syscall MSRs for this CPU (per-CPU syscall stack)
+    crate::arch::x86_64::syscall::init_for_cpu(cpu_id_val as usize);
     
-    // Signal that we're ready
+    // Initialize Local APIC (DON'T print here - could cause deadlock!)
+    let apic_result = super::apic::init_apic();
+    
+    // Signal that we're ready FIRST (before any serial output to avoid deadlock!)
     AP_STARTED_COUNT.fetch_add(1, Ordering::Release);
-    
-    crate::serial_println!("[SMP] CPU {} online (LAPIC 0x{:x})", cpu_id_val, lapic_id);
-    
-    // Signal BSP that this AP is ready
     CURRENT_AP_READY.store(true, Ordering::Release);
     
     // Release init lock so next AP can initialize
     AP_INIT_LOCK.store(false, Ordering::Release);
+    
+    // NOW safe to print - BSP is no longer blocked waiting for us
+    if let Err(e) = apic_result {
+        crate::serial_println!("[SMP] CPU {} APIC init failed: {}", cpu_id_val, e);
+    }
+    crate::serial_println!("[SMP] CPU {} online (LAPIC 0x{:x})", cpu_id_val, lapic_id);
     
     // Enable interrupts now that IDT is loaded
     asm!("sti");

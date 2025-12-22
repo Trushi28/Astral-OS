@@ -50,10 +50,14 @@ pub fn spawn_user_process(elf_data: &[u8]) -> Result<SpawnedProcess, &'static st
     let (mut user_pt, stack_top) = create_user_address_space()?;
     let page_table_phys = user_pt.p4_physical().as_u64();
     
+    // Track mapped pages across all segments (page_vaddr -> frame_phys)
+    // This prevents "Page already mapped" errors when segments share pages
+    let mut mapped_pages: alloc::collections::BTreeMap<u64, PhysAddr> = alloc::collections::BTreeMap::new();
+    
     // Load ELF segments
     for ph in header.program_headers(elf_data)? {
         if ph.p_type == PT_LOAD {
-            load_segment_to_user(ph, elf_data, &mut user_pt)?;
+            load_segment_with_tracking(ph, elf_data, &mut user_pt, &mut mapped_pages)?;
         }
     }
     
@@ -98,11 +102,16 @@ pub fn spawn_user_process(elf_data: &[u8]) -> Result<SpawnedProcess, &'static st
     })
 }
 
-/// Load a single ELF segment into user page table
-fn load_segment_to_user(
+/// Load a single ELF segment into user page table with page tracking
+/// 
+/// Uses `mapped_pages` to track which pages have already been allocated/mapped,
+/// allowing segments that share pages (e.g., end of .text and start of .rodata
+/// falling in the same page) to work correctly.
+fn load_segment_with_tracking(
     ph: &super::elf::Elf64ProgramHeader,
     elf_data: &[u8],
     page_table: &mut PageTableManager,
+    mapped_pages: &mut alloc::collections::BTreeMap<u64, PhysAddr>,
 ) -> Result<(), &'static str> {
     let virt_addr = ph.p_vaddr;
     let mem_size = ph.p_memsz as usize;
@@ -120,6 +129,9 @@ fn load_segment_to_user(
     let virt_end = crate::util::align_up((virt_addr + mem_size as u64) as usize, crate::PAGE_SIZE);
     let num_pages = (virt_end - virt_start as usize) / crate::PAGE_SIZE;
     
+    crate::serial_println!("[SPAWN]   virt_start=0x{:x}, virt_end=0x{:x}, num_pages={}", 
+        virt_start, virt_end, num_pages);
+    
     // Determine page flags based on segment permissions
     let mut flags = PageTableEntry::PRESENT | PageTableEntry::USER;
     
@@ -135,27 +147,49 @@ fn load_segment_to_user(
     
     let hhdm = crate::get_hhdm_offset();
     
-    // Allocate and map pages
-    let mut allocated_frames: alloc::vec::Vec<PhysAddr> = alloc::vec::Vec::new();
+    // Collect frames for this segment (some may already be mapped)
+    let mut segment_frames: alloc::vec::Vec<PhysAddr> = alloc::vec::Vec::new();
     
     for i in 0..num_pages {
-        let page_virt = VirtAddr::new(virt_start + (i * crate::PAGE_SIZE) as u64);
-        let frame = allocate_frame().ok_or("Out of memory loading ELF")?;
+        let page_virt = virt_start + (i * crate::PAGE_SIZE) as u64;
         
-        // Zero the page
-        unsafe {
-            let ptr = (frame.as_u64() as usize + hhdm) as *mut u8;
-            core::ptr::write_bytes(ptr, 0, crate::PAGE_SIZE);
-        }
-        
-        // Use map_executable for code segments to ensure NX is not set on intermediate entries
-        if is_executable {
-            page_table.map_executable(page_virt, frame, flags)?;
+        // Check if this page is already mapped (from a previous segment)
+        let frame = if let Some(&existing_frame) = mapped_pages.get(&page_virt) {
+            // Reuse existing frame - page is already mapped
+            crate::serial_println!("[SPAWN]   Reusing page 0x{:x} -> frame 0x{:x}", page_virt, existing_frame.as_u64());
+            existing_frame
         } else {
-            page_table.map(page_virt, frame, flags)?;
-        }
+            // Allocate new frame
+            crate::serial_println!("[SPAWN]   Allocating NEW page 0x{:x}", page_virt);
+            let new_frame = allocate_frame().ok_or("Out of memory loading ELF")?;
+            
+            crate::serial_println!("[SPAWN]   Got frame 0x{:x}, zeroing...", new_frame.as_u64());
+            
+            // Zero the page
+            unsafe {
+                let ptr = (new_frame.as_u64() as usize + hhdm) as *mut u8;
+                core::ptr::write_bytes(ptr, 0, crate::PAGE_SIZE);
+            }
+            
+            // Map the page
+            let page_virt_addr = VirtAddr::new(page_virt);
+            crate::serial_println!("[SPAWN]   Mapping page 0x{:x} -> frame 0x{:x}, exec={}", 
+                page_virt, new_frame.as_u64(), is_executable);
+            
+            if is_executable {
+                page_table.map_executable(page_virt_addr, new_frame, flags)?;
+            } else {
+                page_table.map(page_virt_addr, new_frame, flags)?;
+            }
+            
+            // Track this mapping
+            mapped_pages.insert(page_virt, new_frame);
+            crate::serial_println!("[SPAWN]   Mapped successfully");
+            
+            new_frame
+        };
         
-        allocated_frames.push(frame);
+        segment_frames.push(frame);
     }
     
     // Copy segment data
@@ -168,8 +202,8 @@ fn load_segment_to_user(
             let page_idx = ((virt & !0xFFF) - virt_start) as usize / crate::PAGE_SIZE;
             let page_offset = (virt & 0xFFF) as usize;
             
-            if page_idx < allocated_frames.len() {
-                let frame = allocated_frames[page_idx];
+            if page_idx < segment_frames.len() {
+                let frame = segment_frames[page_idx];
                 unsafe {
                     let ptr = (frame.as_u64() as usize + hhdm + page_offset) as *mut u8;
                     core::ptr::write_volatile(ptr, byte);
@@ -182,6 +216,7 @@ fn load_segment_to_user(
     
     Ok(())
 }
+
 
 /// Allocate a kernel stack for a user process
 fn allocate_kernel_stack() -> Result<u64, &'static str> {
@@ -248,44 +283,4 @@ pub fn run_user_process_now(spawned: &SpawnedProcess) -> ! {
     loop {
         core::hint::spin_loop();
     }
-}
-
-/// Embedded test binary - a minimal user program that calls write syscall
-/// This is position-independent code that prints "Hello from Ring 3!\n"
-pub fn get_test_user_binary() -> &'static [u8] {
-    // Minimal user program (raw x86-64 machine code):
-    // mov rax, 1        ; syscall number for write
-    // mov rdi, 1        ; fd = stdout
-    // lea rsi, [rip+msg] ; buffer address
-    // mov rdx, 18       ; length
-    // syscall
-    // mov rax, 60       ; syscall number for exit  
-    // xor rdi, rdi      ; exit code 0
-    // syscall
-    // msg: "Hello from Ring 3!\n"
-    
-    static TEST_CODE: [u8; 61] = [
-        // mov rax, 1
-        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
-        // mov rdi, 1
-        0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
-        // lea rsi, [rip+21] (message is 21 bytes after this instruction ends)
-        0x48, 0x8d, 0x35, 0x15, 0x00, 0x00, 0x00,
-        // mov rdx, 18
-        0x48, 0xc7, 0xc2, 0x12, 0x00, 0x00, 0x00,
-        // syscall
-        0x0f, 0x05,
-        // mov rax, 60 (exit)
-        0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00,
-        // xor rdi, rdi
-        0x48, 0x31, 0xff,
-        // syscall
-        0x0f, 0x05,
-        // Message: "Hello from Ring 3!\n" (19 bytes)
-        b'H', b'e', b'l', b'l', b'o', b' ', b'f', b'r',
-        b'o', b'm', b' ', b'R', b'i', b'n', b'g', b' ',
-        b'3', b'!', b'\n', 
-    ];
-    
-    &TEST_CODE
 }
