@@ -179,6 +179,14 @@ pub fn run() {
                         key_handled = true;
                     }
                     b'c' => {
+                        if calculator.is_none() {
+                            calculator = Some(Calculator::new());
+                            calc_window_id = display::create_window(client_id, "Calculator", 280, 320).ok();
+                            if let (Some(id), Some(ref calc)) = (calc_window_id, &calculator) { draw_calculator(id, calc); }
+                        } else if let Some(id) = calc_window_id { display::focus_window(id); }
+                        key_handled = true;
+                    }
+                    b'x' => {
                         if let Some(win) = focused {
                             if Some(win) == calc_window_id {
                                 calculator = None;
@@ -255,19 +263,15 @@ pub fn run() {
         }
         
         // 4. Wait/Sleep
-        // Simple delay to prevent 100% CPU usage loop
-        // Ideally sync to VBlank, but for now just yield
-        unsafe { 
-             // We want to wait a bit but not halt indefinitely if animating
-             if animating {
-                 // Busy wait or short delay? 
-                 // For smoothness in this env, maybe just spin a bit or yield.
-                 // let's just continue loop immediately (max FPS) or small wait.
-                 for _ in 0..10000 { core::arch::asm!("nop"); } 
-             } else {
-                 // Wait for interrupt (input)
-                 core::arch::asm!("sti", "hlt", options(nomem, nostack));
-             }
+        // Light CPU relief without blocking animations
+        unsafe {
+            if animating {
+                // Small delay to prevent 100% CPU while still allowing smooth animation
+                for _ in 0..1000 { core::hint::spin_loop(); }
+            } else {
+                // If idle, wait for interrupt
+                core::arch::asm!("sti", "hlt", options(nomem, nostack));
+            }
         }
     }
     
@@ -299,18 +303,23 @@ fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
             let surface_id = window.surface_id;
             crate::graphics::with_server(|gs| {
                 if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    
+                    if surface.width != window.width || surface.height != window.height {
+                        let _ = surface.resize(window.width, window.height);
+                    }
+                    
                     let bpp = surface.format.bytes_per_pixel();
                     let w = surface.width;
                     let h = surface.height;
                     
-                    // Dark background
+                    // Glass background (Dark + Alpha)
                     for i in 0..(w * h) as usize {
                         let offset = i * bpp;
                         if offset + 3 < surface.pixels.len() {
-                            surface.pixels[offset] = 0x2d;
-                            surface.pixels[offset + 1] = 0x2d;
-                            surface.pixels[offset + 2] = 0x2d;
-                            surface.pixels[offset + 3] = 0xFF;
+                            surface.pixels[offset] = 0x15;
+                            surface.pixels[offset + 1] = 0x15;
+                            surface.pixels[offset + 2] = 0x15;
+                            surface.pixels[offset + 3] = 0xC0; // Transparent
                         }
                     }
                     
@@ -319,10 +328,10 @@ fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
                         for x in 0..w {
                             let idx = ((y * w + x) as usize) * bpp;
                             if idx + 3 < surface.pixels.len() {
-                                surface.pixels[idx] = 0x38;
-                                surface.pixels[idx + 1] = 0x38;
-                                surface.pixels[idx + 2] = 0x38;
-                                surface.pixels[idx + 3] = 0xFF;
+                                surface.pixels[idx] = 0x2A;
+                                surface.pixels[idx + 1] = 0x2A;
+                                surface.pixels[idx + 2] = 0x2A;
+                                surface.pixels[idx + 3] = 0xEE;
                             }
                         }
                     }
@@ -348,7 +357,7 @@ fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
                                         surface.pixels[idx] = 0x0a;
                                         surface.pixels[idx + 1] = 0x84;
                                         surface.pixels[idx + 2] = 0xff;
-                                        surface.pixels[idx + 3] = 0xFF;
+                                        surface.pixels[idx + 3] = 0xD0;
                                     }
                                 }
                             }
@@ -384,7 +393,9 @@ fn draw_file_browser(window_id: u64, browser: &FileBrowser) {
                     }
                     
                     // Help text at bottom with REAL FONT
-                    font::draw_string(surface, 10, h - 20, "j/k:Navigate  d:Delete  r:Refresh", 0x666666);
+                    if h > 50 {
+                        font::draw_string(surface, 10, h - 20, "j/k:Navigate  d:Delete  r:Refresh", 0x666666);
+                    }
                 }
             });
         }
@@ -397,6 +408,11 @@ fn draw_about_window(window_id: u64) {
             let surface_id = window.surface_id;
             crate::graphics::with_server(|gs| {
                 if let Some(surface) = gs.get_surface_mut(surface_id) {
+                    
+                    if surface.width != window.width || surface.height != window.height {
+                        let _ = surface.resize(window.width, window.height);
+                    }
+
                     let bpp = surface.format.bytes_per_pixel();
                     let w = surface.width;
                     let h = surface.height;
@@ -410,12 +426,13 @@ fn draw_about_window(window_id: u64) {
                                 surface.pixels[idx] = lerp(0x16, 0x0f, t);
                                 surface.pixels[idx + 1] = lerp(0x21, 0x34, t);
                                 surface.pixels[idx + 2] = lerp(0x3e, 0x60, t);
-                                surface.pixels[idx + 3] = 0xFF;
+                                surface.pixels[idx + 3] = 0xE0; // Transparent
                             }
                         }
                     }
                     
-                    // Logo area
+                    // Logo area - Centered logic?
+                    // For now, fixed offset is okay because standard layout
                     let logo_color = 0x00AAFF;
                     for y in 30u32..70 {
                         for x in 60u32..100 {
@@ -424,7 +441,7 @@ fn draw_about_window(window_id: u64) {
                                 surface.pixels[idx] = ((logo_color >> 16) & 0xFF) as u8;
                                 surface.pixels[idx + 1] = ((logo_color >> 8) & 0xFF) as u8;
                                 surface.pixels[idx + 2] = (logo_color & 0xFF) as u8;
-                                surface.pixels[idx + 3] = 0xFF;
+                                surface.pixels[idx + 3] = 0xFF; // Keep logo opaque
                             }
                         }
                     }
@@ -559,45 +576,73 @@ fn draw_calculator(window_id: u64, calc: &Calculator) {
             let surface_id = window.surface_id;
             crate::graphics::with_server(|gs| {
                 if let Some(surface) = gs.get_surface_mut(surface_id) {
-                    // Dark background
+                    
+                    // Check if resize needed (if surface size != window size)
+                    if surface.width != window.width || surface.height != window.height {
+                        // Reallocate surface pixels
+                        // IMPORTANT: This is expensive, but necessary for tiling
+                        // Ideally we would do this in the event loop, but doing it here ensures
+                        // the surface is ready for drawing
+                        let _ = surface.resize(window.width, window.height);
+                    }
+                    
                     let bpp = surface.format.bytes_per_pixel();
-                    for i in 0..(surface.width * surface.height) as usize {
+                    let w = surface.width;
+                    let h = surface.height;
+
+                    // Glassmorphism background (Dark + Alpha)
+                    // 0x1a1a2e with alpha 0xD0 (208/255) ~80% opacity
+                    for i in 0..(w * h) as usize {
                         let offset = i * bpp;
+                        // Determine if we need to clear or overwrite
+                        // Since we are redrawing full frame, just overwrite
                         if offset + 3 < surface.pixels.len() {
                             surface.pixels[offset] = 0x1a;
                             surface.pixels[offset + 1] = 0x1a;
                             surface.pixels[offset + 2] = 0x2e;
-                            surface.pixels[offset + 3] = 0xFF;
+                            surface.pixels[offset + 3] = 0xD0; // Transparent!
                         }
                     }
                     
-                    // Display area (top)
-                    for y in 10..60 {
-                        for x in 10..(surface.width - 10) {
-                            let idx = ((y * surface.width + x) as usize) * bpp;
+                    // Display area (top) - Semi-transparent lighter box
+                    let display_h = (h as f32 * 0.2) as u32;
+                    for y in 10..display_h {
+                        for x in 10..(w - 10) {
+                            let idx = ((y * w + x) as usize) * bpp;
                             if idx + 3 < surface.pixels.len() {
-                                surface.pixels[idx] = 0x20;
-                                surface.pixels[idx + 1] = 0x20;
-                                surface.pixels[idx + 2] = 0x20;
+                                surface.pixels[idx] = 0x30;
+                                surface.pixels[idx + 1] = 0x30;
+                                surface.pixels[idx + 2] = 0x40;
+                                surface.pixels[idx + 3] = 0xE0;
                             }
                         }
                     }
                     
                     // Draw display value
-                    font::draw_string(surface, 15, 30, calc.display(), 0x00FF88);
+                    font::draw_string(surface, 20, 30, calc.display(), 0x00FFAA);
                     
-                    // Draw current operator if any
+                    // Draw current operator
                     if let Some(op) = calc.current_operator() {
                         let op_str = format!(" {}", op);
-                        font::draw_string(surface, 15, 15, &op_str, 0xFFAA00);
+                        font::draw_string(surface, w - 30, 30, &op_str, 0xFFAA00);
                     }
                     
-                    // Button labels (visual guide)
-                    font::draw_string(surface, 15, 70, "7 8 9 /", 0xAAAAAA);
-                    font::draw_string(surface, 15, 90, "4 5 6 *", 0xAAAAAA);
-                    font::draw_string(surface, 15, 110, "1 2 3 -", 0xAAAAAA);
-                    font::draw_string(surface, 15, 130, "0 . = +", 0xAAAAAA);
-                    font::draw_string(surface, 15, 160, "C = Clear", 0x666666);
+                    // Responsive Buttons Layout
+                    let start_y = display_h + 20;
+                    let btn_rows = [
+                        "7 8 9 /",
+                        "4 5 6 *",
+                        "1 2 3 -",
+                        "0 . = +",
+                    ];
+                    
+                    for (i, row) in btn_rows.iter().enumerate() {
+                        let y = start_y + (i as u32 * 40);
+                        // Scale font/spacing roughly? No, just center text for now
+                        font::draw_string(surface, 20, y, row, 0xAAAAAA);
+                    }
+                    
+                    font::draw_string(surface, 20, start_y + 160, "C = Clear", 0x888888);
                 }
             });
         }
@@ -611,15 +656,24 @@ fn draw_terminal(window_id: u64, term: &Terminal) {
             let surface_id = window.surface_id;
             crate::graphics::with_server(|gs| {
                 if let Some(surface) = gs.get_surface_mut(surface_id) {
-                    // Black background
+                    
+                    if surface.width != window.width || surface.height != window.height {
+                        let _ = surface.resize(window.width, window.height);
+                    }
+                    
+                    let w = surface.width;
+                    let h = surface.height;
                     let bpp = surface.format.bytes_per_pixel();
-                    for i in 0..(surface.width * surface.height) as usize {
+
+                    // Glass background (Dark + Alpha)
+                    // Terminal slightly more opaque for readability
+                    for i in 0..(w * h) as usize {
                         let offset = i * bpp;
                         if offset + 3 < surface.pixels.len() {
                             surface.pixels[offset] = 0x0a;
                             surface.pixels[offset + 1] = 0x0a;
-                            surface.pixels[offset + 2] = 0x0a;
-                            surface.pixels[offset + 3] = 0xFF;
+                            surface.pixels[offset + 2] = 0x10;
+                            surface.pixels[offset + 3] = 0xE0; // ~88% opacity
                         }
                     }
                     

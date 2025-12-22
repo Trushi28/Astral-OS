@@ -119,6 +119,30 @@ impl Surface {
         Ok(())
     }
     
+    /// Resize the surface (clears content)
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), &'static str> {
+        if width == 0 || height == 0 || width > 8192 || height > 8192 {
+            return Err("Invalid dimensions");
+        }
+        
+        if self.width == width && self.height == height {
+            return Ok(());
+        }
+        
+        self.width = width;
+        self.height = height;
+        
+        let pixel_count = (width * height) as usize;
+        let buffer_size = pixel_count * self.format.bytes_per_pixel();
+        
+        // Reallocate
+        self.pixels = alloc::vec![0u8; buffer_size];
+        self.dirty.store(true, Ordering::Release);
+        self.dirty_rects.clear(); // Invalidate dirty rects as they might be out of bounds
+        
+        Ok(())
+    }
+    
     pub fn clear(&mut self, color: u32) {
         let bytes_per_pixel = self.format.bytes_per_pixel();
         

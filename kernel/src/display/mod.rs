@@ -92,7 +92,7 @@ impl DisplayServer {
             screen_height: height,
             layout_mode: LayoutMode::Dwindle, // Default to Dwindle/Tiling
             gap_size: 10,
-            animation_speed: 0.15, // Fast but smooth
+            animation_speed: 0.35, // Fast and responsive
             taskbar_height: 40,
             taskbar_visible: true,
             running: false,
@@ -140,8 +140,8 @@ impl DisplayServer {
             // Start from center for "pop in" animation
             x: center_x,
             y: center_y,
-            width: 10,  
-            height: 10,
+            width: 50,  
+            height: 50,
             // Targets will be set by recalculate_layout
             target_x: center_x,
             target_y: center_y,

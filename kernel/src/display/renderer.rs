@@ -93,16 +93,20 @@ fn render_windows_to_buffer(server: &DisplayServer) {
             // Draw Window Background (Rounded)
             draw_rounded_rect(buffer, screen_width, wx, wy, ww, wh, radius, theme.window_bg);
             
-            // Draw Border
+            // Draw Border & Neon Glow
             let border_color = if window.focused {
-                 // Simple gradient effect for active border based on position
+                 // Neon Glow Effect
+                 // Draw multiple outlines with decreasing opacity
+                 // Outer glows
+                 draw_rounded_outline(buffer, screen_width, wx-1, wy-1, ww+2, wh+2, radius+1, 1, 0x4000AAFF); // Wide faint
+                 draw_rounded_outline(buffer, screen_width, wx-2, wy-2, ww+4, wh+4, radius+2, 1, 0x2000AAFF); // Wider fainter
+                 
                  theme.window_border_active_start
             } else {
                 theme.window_border
             };
             
-            // We draw border by drawing a larger rounded rect behind? Or stroking?
-            // Simple stroke for now:
+            // Main sharp border
              draw_rounded_outline(buffer, screen_width, wx, wy, ww, wh, radius, 2, border_color);
 
             // Title bar (Only if decorated/floating)
@@ -188,10 +192,31 @@ fn render_surface_clipped(buffer: &mut [u32], screen_width: usize, surface_id: u
                     let surf_idx = (dy as usize * surf_w + dx as usize) * bytes_per_pixel;
                     
                     if surf_idx + 3 < surface.pixels.len() {
-                        let r = surface.pixels[surf_idx] as u32;
-                        let g = surface.pixels[surf_idx + 1] as u32;
-                        let b = surface.pixels[surf_idx + 2] as u32;
-                        buffer[buf_idx] = (r << 16) | (g << 8) | b;
+                    if surf_idx + 3 < surface.pixels.len() {
+                        let sr = surface.pixels[surf_idx] as u32;
+                        let sg = surface.pixels[surf_idx + 1] as u32;
+                        let sb = surface.pixels[surf_idx + 2] as u32;
+                        let sa = surface.pixels[surf_idx + 3] as u32;
+                        
+                        // Alpha blend: src * a + dst * (1 - a)
+                        if sa == 255 {
+                            // Opaque fast path
+                            buffer[buf_idx] = (sr << 16) | (sg << 8) | sb;
+                        } else if sa > 0 {
+                            // Blending
+                            let bg = buffer[buf_idx];
+                            let br = (bg >> 16) & 0xFF;
+                            let bg_g = (bg >> 8) & 0xFF;
+                            let bb = bg & 0xFF;
+                            
+                            // Simple integer blending
+                            let r = (sr * sa + br * (255 - sa)) / 255;
+                            let g = (sg * sa + bg_g * (255 - sa)) / 255;
+                            let b = (sb * sa + bb * (255 - sa)) / 255;
+                            
+                            buffer[buf_idx] = (r << 16) | (g << 8) | b;
+                        }
+                    }
                     }
                 }
             }
@@ -243,7 +268,8 @@ fn render_taskbar_to_buffer(server: &DisplayServer) {
     
     // Draw text labels
     let tb_y = (server.screen_height - server.taskbar_height) as i32;
-    draw_text(20, tb_y + 10, "Start", theme.taskbar_text);
+    // Draw help text instead of "Start"
+    draw_text(12, tb_y + 10, "1:Files 2:Term c:Calc x:Close q:Exit", theme.taskbar_text);
     
     let mut btn_x = 80;
     for window in server.windows_sorted() {
