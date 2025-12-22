@@ -41,6 +41,13 @@ fn syscall0(num: u64) -> u64 {
             inlateout("rax") num => ret,
             out("rcx") _,
             out("r11") _,
+            // Kernel handler may clobber these caller-saved regs
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            lateout("r8") _,
+            lateout("r9") _,
+            lateout("r10") _,
             options(nostack)
         );
     }
@@ -57,6 +64,12 @@ fn syscall1(num: u64, arg1: u64) -> u64 {
             in("rdi") arg1,
             out("rcx") _,
             out("r11") _,
+            // Kernel handler may clobber these caller-saved regs
+            lateout("rsi") _,
+            lateout("rdx") _,
+            lateout("r8") _,
+            lateout("r9") _,
+            lateout("r10") _,
             options(nostack)
         );
     }
@@ -207,11 +220,28 @@ const COLOR_GRAY: u32 = 0x888888;
 
 // ============================================================================
 // ENTRY POINT
-// ============================================================================
-
+// Entry point - must align stack to 16 bytes before calling Rust code
+#[unsafe(naked)]
 #[no_mangle]
 #[link_section = ".text._start"]
-pub extern "C" fn _start() -> ! {
+pub unsafe extern "C" fn _start() -> ! {
+    core::arch::naked_asm!(
+        // Align the stack to 16 bytes (required for SSE instructions like movaps)
+        "and rsp, ~0xF",
+        // Call our main function
+        "call {shell_main}",
+        // If shell_main returns (shouldn't), exit
+        "mov rdi, 0",
+        "call {exit}",
+        // Should never reach here
+        "ud2",
+        shell_main = sym shell_main,
+        exit = sym exit,
+    );
+}
+
+/// Main shell function, called with aligned stack
+extern "C" fn shell_main() {
     // Print banner
     print_colored("╔═══════════════════════════════════════════╗\n", COLOR_CYAN);
     print_colored("║      ", COLOR_CYAN);
@@ -273,6 +303,12 @@ pub extern "C" fn _start() -> ! {
         
         // Process command
         if cmd_len > 0 {
+            // DEBUG: Show command length to trace panic
+            print("[CMD:");
+            let digit = b'0' + (cmd_len as u8 % 10);
+            let digit_str = [digit];
+            syscall3(SYS_WRITE, 1, digit_str.as_ptr() as u64, 1);
+            print("]");
             process_command(&cmd_buf[..cmd_len]);
         }
     }

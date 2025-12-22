@@ -51,7 +51,15 @@ macro_rules! exception_with_error_wrapper {
     ($name:ident, $handler:ident) => {
         #[unsafe(naked)]
         pub unsafe extern "C" fn $name() {
+            // On entry, stack contains (from CPU):
+            //   [rsp+0]: error_code
+            //   [rsp+8]: RIP
+            //   [rsp+16]: CS
+            //   [rsp+24]: RFLAGS
+            //   [rsp+32]: RSP
+            //   [rsp+40]: SS
             core::arch::naked_asm!(
+                // Save all caller-saved registers
                 "push rax",
                 "push rcx",
                 "push rdx",
@@ -61,8 +69,22 @@ macro_rules! exception_with_error_wrapper {
                 "push r9",
                 "push r10",
                 "push r11",
-                "mov rdi, [rsp + 72]",
+                
+                // After pushes (9 regs = 72 bytes):
+                //   [rsp+72]: error_code (pushed by CPU)
+                //   [rsp+80]: RIP
+                //   [rsp+88]: CS
+                //   [rsp+96]: RFLAGS
+                //   [rsp+104]: RSP  
+                //   [rsp+112]: SS
+                
+                // Set up arguments for handler: handler(error_code, frame_ptr)
+                "mov rdi, [rsp + 72]",   // arg1 = error_code
+                "lea rsi, [rsp + 80]",   // arg2 = pointer to RIP (start of interrupt frame)
+                
                 concat!("call ", stringify!($handler)),
+                
+                // Restore registers
                 "pop r11",
                 "pop r10",
                 "pop r9",
@@ -72,7 +94,7 @@ macro_rules! exception_with_error_wrapper {
                 "pop rdx",
                 "pop rcx",
                 "pop rax",
-                "add rsp, 8",
+                "add rsp, 8",  // Skip error_code
                 "iretq",
             );
         }
@@ -157,50 +179,42 @@ extern "C" fn segment_not_present_handler(error_code: u64) {
 }
 
 #[no_mangle]
-extern "C" fn stack_segment_fault_handler(error_code: u64) {
+extern "C" fn stack_segment_fault_handler(error_code: u64, _frame: *const u64) {
     panic!("EXCEPTION: Stack Segment Fault (error: 0x{:x})", error_code);
 }
 
 #[no_mangle]
-extern "C" fn general_protection_fault_handler(error_code: u64) {
-    // Get RIP and CS from the interrupt frame
-    // Stack layout after exception_with_error_wrapper + call:
-    //   rsp+0:   return address (pushed by call instruction)
-    //   rsp+8:   r11 (pushed by wrapper)
-    //   rsp+16:  r10
-    //   rsp+24:  r9
-    //   rsp+32:  r8
-    //   rsp+40:  rdi
-    //   rsp+48:  rsi
-    //   rsp+56:  rdx
-    //   rsp+64:  rcx
-    //   rsp+72:  rax
-    //   rsp+80:  error_code (pushed by CPU)
-    //   rsp+88:  RIP
-    //   rsp+96:  CS
-    //   rsp+104: RFLAGS
-    //   rsp+112: RSP
-    //   rsp+120: SS
-    let rip: u64;
-    let cs: u64;
-    unsafe {
-        asm!(
-            "mov {}, [rsp + 88]",  // RIP
-            out(reg) rip,
-            options(nostack)
-        );
-        asm!(
-            "mov {}, [rsp + 96]",  // CS
-            out(reg) cs,
-            options(nostack)
-        );
+extern "C" fn general_protection_fault_handler(error_code: u64, frame: *const InterruptFrame) {
+    // The frame pointer comes from the wrapper, pointing to the interrupt frame
+    // This avoids issues with Rust's function prologue modifying RSP
+    
+    let (rip, cs, user_rsp, ss) = if !frame.is_null() {
+        unsafe {
+            let f = &*frame;
+            (f.rip, f.cs, f.rsp, f.ss)
+        }
+    } else {
+        (0xDEAD, 0xDEAD, 0xDEAD, 0xDEAD)
+    };
+    
+    crate::serial_println!("!!! GENERAL PROTECTION FAULT !!!");
+    crate::serial_println!("  Error code: 0x{:x}", error_code);
+    crate::serial_println!("  Frame pointer: {:?}", frame);
+    crate::serial_println!("  Interrupt frame:");
+    crate::serial_println!("    RIP: 0x{:x}", rip);
+    crate::serial_println!("    CS:  0x{:x}", cs);
+    crate::serial_println!("    RSP: 0x{:x}", user_rsp);
+    crate::serial_println!("    SS:  0x{:x}", ss);
+    
+    // Try to determine if this was from user or kernel mode
+    if cs & 3 == 3 {
+        crate::serial_println!("  Mode: User (Ring 3)");
+    } else {
+        crate::serial_println!("  Mode: Kernel (Ring 0)");
     }
     
-    crate::serial_println!("!!! GPF !!! error: 0x{:x}", error_code);
-    crate::serial_println!("  RIP: 0x{:x}, CS: 0x{:x}", rip, cs);
-    crate::serial_println!("  Halting to prevent storm...");
+    crate::serial_println!("  Halting...");
     
-    // HALT instead of panic to prevent interrupt storm
     loop {
         unsafe { core::arch::asm!("cli; hlt"); }
     }

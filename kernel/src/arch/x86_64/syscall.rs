@@ -144,19 +144,33 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 }
 
 /// Syscall entry point (called from Ring 3)
+/// 
+/// On entry from syscall instruction:
+///   RAX = syscall number
+///   RDI = arg1, RSI = arg2, RDX = arg3, R10 = arg4, R8 = arg5, R9 = arg6
+///   RCX = user RIP (saved by CPU), R11 = user RFLAGS (saved by CPU)
+///   RSP = user stack (need to switch to kernel stack)
 #[unsafe(naked)]
 unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
-        // Save user stack
-        "swapgs",
-        "mov gs:[0], rsp",  // Save user RSP
+        // === Switch to kernel context ===
+        "swapgs",                    // Swap GS.base with IA32_KERNEL_GS_BASE
+        "mov gs:[0], rsp",           // Save user RSP to per-CPU data
+        "mov rsp, gs:[8]",           // Load kernel RSP from per-CPU data
         
-        // Load kernel stack
-        "mov rsp, gs:[8]",
+        // === Save ALL registers we need to preserve ===
+        // Push syscall arguments first so we can access them later
+        "push rax",                  // [rsp+56] syscall number
+        "push rdi",                  // [rsp+48] arg1
+        "push rsi",                  // [rsp+40] arg2
+        "push rdx",                  // [rsp+32] arg3
+        "push r10",                  // [rsp+24] arg4  
+        "push r8",                   // [rsp+16] arg5
+        "push r9",                   // [rsp+8]  arg6
+        "push rcx",                  // [rsp+0]  user RIP (for sysret)
+        "push r11",                  // [rsp+0 after] user RFLAGS
         
-        // Save callee-saved registers
-        "push rcx",   // User RIP
-        "push r11",   // User RFLAGS
+        // Now save callee-saved registers (C ABI)
         "push rbx",
         "push rbp",
         "push r12",
@@ -164,39 +178,57 @@ unsafe extern "C" fn syscall_entry() {
         "push r14",
         "push r15",
         
-        // Remap syscall registers to C ABI
-        // Syscall uses: rax=num, rdi=arg1, rsi=arg2, rdx=arg3, r10=arg4, r8=arg5
-        // C ABI uses:   rdi=p1,  rsi=p2,  rdx=p3,  rcx=p4,  r8=p5,  r9=p6
-        //
-        // We need: rdi=rax, rsi=rdi, rdx=rsi, rcx=rdx
-        // Use r15 as scratch (already saved)
-        "mov r15, rdx",   // Save arg3 (length=13)
-        "mov rcx, r15",   // p4 (rcx) = arg3
-        "mov r15, rsi",   // Save arg2 (buf addr)
-        "mov rdx, r15",   // p3 (rdx) = arg2 (buffer)
-        "mov r15, rdi",   // Save arg1 (fd=1)
-        "mov rsi, r15",   // p2 (rsi) = arg1 (fd)
-        "mov rdi, rax",   // p1 (rdi) = syscall number
-        // r8, r9 stay same for arg5, arg6
+        // === Call handler with C ABI arguments ===
+        // Load arguments from where we saved them on stack
+        // Stack layout now (from rsp):
+        //   rsp+0:  r15
+        //   rsp+8:  r14
+        //   rsp+16: r13
+        //   rsp+24: r12
+        //   rsp+32: rbp
+        //   rsp+40: rbx
+        //   rsp+48: r11 (user RFLAGS)
+        //   rsp+56: rcx (user RIP)
+        //   rsp+64: r9 (arg6)
+        //   rsp+72: r8 (arg5)
+        //   rsp+80: r10 (arg4)
+        //   rsp+88: rdx (arg3)
+        //   rsp+96: rsi (arg2)
+        //   rsp+104: rdi (arg1)
+        //   rsp+112: rax (syscall num)
+        
+        // Set up C ABI: rdi=p1, rsi=p2, rdx=p3, rcx=p4, r8=p5, r9=p6
+        "mov rdi, [rsp+112]",        // p1 = syscall number
+        "mov rsi, [rsp+104]",        // p2 = arg1
+        "mov rdx, [rsp+96]",         // p3 = arg2
+        "mov rcx, [rsp+88]",         // p4 = arg3
+        "mov r8,  [rsp+80]",         // p5 = arg4
+        "mov r9,  [rsp+72]",         // p6 = arg5
         
         "call {handler}",
         
-        // Restore registers
+        // RAX now contains return value
+        
+        // === Restore callee-saved registers ===
         "pop r15",
         "pop r14",
         "pop r13",
         "pop r12",
         "pop rbp",
         "pop rbx",
-        "pop r11",   // User RFLAGS
-        "pop rcx",   // User RIP
         
-        // Restore user stack
-        "mov rsp, gs:[0]",
-        "swapgs",
+        // === Restore syscall context ===
+        "pop r11",                   // user RFLAGS
+        "pop rcx",                   // user RIP
         
-        // Return to Ring 3
-        "sysretq",
+        // Skip saved args (7 pushes = 56 bytes)
+        "add rsp, 56",
+        
+        // === Return to user mode ===
+        "mov rsp, gs:[0]",           // Restore user RSP
+        "swapgs",                    // Swap back to user GS
+        "sysretq",                   // Return to Ring 3
+        
         handler = sym ring3_syscall_handler,
     );
 }
@@ -210,9 +242,8 @@ extern "C" fn ring3_syscall_handler(
     _arg4: u64,
     _arg5: u64,
 ) -> u64 {
-    // TEMPORARILY DISABLED: Trace syscalls - testing if serial output causes corruption
-    // crate::serial_println!("[SYSCALL] num={} arg1=0x{:x} arg2=0x{:x} arg3=0x{:x}", 
-    //     syscall_num, arg1, arg2, arg3);
+    // NOTE: DO NOT USE serial_println! at the START of this handler!
+    // Serial I/O corrupts syscall arguments (port reads/writes leak into regs)
     
     match syscall_num {
         SYS_WRITE => {
@@ -220,6 +251,12 @@ extern "C" fn ring3_syscall_handler(
             let fd = arg1;
             let buf = arg2;  // User virtual address
             let len = arg3 as usize;
+            
+            // SAFETY: Limit length to prevent buffer overflow from corrupted args
+            const MAX_WRITE_LEN: usize = 4096;
+            if len > MAX_WRITE_LEN {
+                return u64::MAX; // Error - corrupted length argument
+            }
             
             if fd == 1 && len > 0 && buf != 0 {  // stdout, valid length, non-null buffer
                 // Write ALL bytes from the buffer
@@ -453,7 +490,7 @@ extern "C" fn ring3_syscall_handler(
             let color = arg3 as u32;
             
             // SAFETY: Limit length to prevent stack smash from corrupted args
-            const MAX_PRINT_LEN: usize = 256;
+            const MAX_PRINT_LEN: usize = 4096;
             if len > MAX_PRINT_LEN || ptr.is_null() {
                 return u64::MAX; // Error - corrupted args or bad pointer
             }

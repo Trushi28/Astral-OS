@@ -111,10 +111,18 @@ pub fn allocate_user_stack(page_table: &mut PageTableManager) -> Result<u64, &'s
     }
     
     // Return stack top (stack grows downward)
+    // Must be 16-byte aligned for System V ABI SSE requirements
     let stack_top = USER_STACK_BASE + USER_STACK_SIZE as u64;
-    crate::serial_println!("[RING3] User stack allocated, top at 0x{:x}", stack_top);
     
-    Ok(stack_top)
+    // For program entry, RSP must be 16-byte aligned
+    // We also need to account for the fact that functions will push RBP
+    // So start at aligned address. Rust/LLVM may generate movaps which needs 16-byte alignment.
+    let aligned_stack = stack_top & !0xF;  // Ensure 16-byte alignment
+    
+    crate::serial_println!("[RING3] User stack allocated, top at 0x{:x} (aligned: 0x{:x})", 
+        stack_top, aligned_stack);
+    
+    Ok(aligned_stack)
 }
 
 /// Information about a created user address space

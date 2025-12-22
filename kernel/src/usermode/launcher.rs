@@ -3,7 +3,7 @@
 //! Launches the user shell in true Ring 3 using ELF loader.
 
 use crate::arch::x86_64::usermode::enter_usermode;
-use crate::arch::x86_64::tss::update_kernel_stack;
+use crate::interrupts::idt::set_tss_rsp0;  // Use the correct TSS (from idt.rs, not tss.rs!)
 use crate::usermode::spawn::spawn_user_process;
 
 /// Launch the user shell in Ring 3 from embedded ELF binary
@@ -39,12 +39,18 @@ pub fn launch_user_shell() -> ! {
     // Set as current process
     crate::process::set_current_pid(spawned.pid);
     
-    // Update TSS for syscall returns
+    // Update TSS RSP0 for syscall/interrupt returns
     let kernel_stack = {
         let table = crate::process::process_table().lock();
         table.get(spawned.pid).map(|p| p.kernel_stack).unwrap_or(0)
     };
-    update_kernel_stack(kernel_stack);
+    
+    crate::serial_println!("[RING3] Setting TSS RSP0 to kernel_stack: 0x{:x}", kernel_stack);
+    set_tss_rsp0(kernel_stack);
+    
+    // Verify TSS RSP0 was set
+    let rsp0 = crate::interrupts::idt::get_tss_rsp0();
+    crate::serial_println!("[RING3] TSS RSP0 now: 0x{:x}", rsp0);
     
     crate::serial_println!("[RING3] Entering Ring 3 at 0x{:x} with stack 0x{:x}",
         spawned.entry_point, spawned.user_stack);
@@ -107,12 +113,12 @@ pub fn launch_shell_from_fs(filename: &str) -> Result<!, &'static str> {
     // Set as current process
     crate::process::set_current_pid(spawned.pid);
     
-    // Update TSS for syscall returns
+    // Update TSS RSP0 for syscall/interrupt returns
     let kernel_stack = {
         let table = crate::process::process_table().lock();
         table.get(spawned.pid).map(|p| p.kernel_stack).unwrap_or(0)
     };
-    update_kernel_stack(kernel_stack);
+    set_tss_rsp0(kernel_stack);
     
     crate::serial_println!("[RING3] Entering Ring 3 from filesystem shell");
     
