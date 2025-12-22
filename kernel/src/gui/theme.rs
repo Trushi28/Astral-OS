@@ -17,10 +17,13 @@ pub struct Theme {
     // Window
     pub window_bg: u32,
     pub window_border: u32,
+    pub window_border_active_start: u32, // Gradient start for active border
+    pub window_border_active_end: u32,   // Gradient end for active border
     pub window_title_bg: u32,
     pub window_title_bg_inactive: u32,
     pub window_title_text: u32,
     pub window_title_height: u32,
+    pub window_radius: u32,
     
     // Window buttons
     pub button_close: u32,
@@ -53,10 +56,13 @@ impl Theme {
         // Window - Dark with accent
         window_bg: 0x2d2d2d,
         window_border: 0x3d3d3d,
+        window_border_active_start: 0x0a84ff,
+        window_border_active_end: 0x00ff88,
         window_title_bg: 0x383838,
         window_title_bg_inactive: 0x2a2a2a,
         window_title_text: 0xffffff,
         window_title_height: 30,
+        window_radius: 12,
         
         // macOS-style window buttons
         button_close: 0xff5f57,    // Red
@@ -70,40 +76,43 @@ impl Theme {
         accent: 0x0a84ff,
         shadow: 0x00000080,
     };
-    
-    /// Light theme (like Windows 11)
-    pub const LIGHT: Theme = Theme {
-        // Desktop - Light blue gradient
-        desktop_bg: 0x4a90d9,
-        desktop_gradient_top: 0x87ceeb,
-        desktop_gradient_bottom: 0x4169e1,
+
+    /// Hyprland-style Mocha Theme (Catppuccin inspired)
+    pub const HYPRLAND: Theme = Theme {
+        // Desktop - Deep violet/black
+        desktop_bg: 0x1e1e2e,
+        desktop_gradient_top: 0x1e1e2e,
+        desktop_gradient_bottom: 0x11111b,
         
         // Taskbar
-        taskbar_bg: 0xf3f3f3,
-        taskbar_text: 0x333333,
-        taskbar_button_bg: 0xe5e5e5,
-        taskbar_button_hover: 0xd5d5d5,
-        taskbar_height: 48,
+        taskbar_bg: 0x181825,
+        taskbar_text: 0xcdd6f4,
+        taskbar_button_bg: 0x313244,
+        taskbar_button_hover: 0x45475a,
+        taskbar_height: 38,
         
         // Window
-        window_bg: 0xffffff,
-        window_border: 0xcccccc,
-        window_title_bg: 0xfafafa,
-        window_title_bg_inactive: 0xf0f0f0,
-        window_title_text: 0x333333,
-        window_title_height: 32,
+        window_bg: 0x1e1e2e, // Base
+        window_border: 0x313244, // Surface0
+        window_border_active_start: 0x89b4fa, // Blue
+        window_border_active_end: 0xcba6f7,   // Mauve
+        window_title_bg: 0x181825, // Mantle
+        window_title_bg_inactive: 0x11111b, // Crust
+        window_title_text: 0xcdd6f4, // Text
+        window_title_height: 28,
+        window_radius: 12, // Rounded corners
         
-        // Windows-style buttons
-        button_close: 0xe81123,
-        button_maximize: 0x00ca4e,
-        button_minimize: 0xffbd44,
-        button_hover: 0xcccccc,
+        // Buttons
+        button_close: 0xf38ba8, // Red
+        button_maximize: 0xa6e3a1, // Green
+        button_minimize: 0xf9e2af, // Yellow
+        button_hover: 0x585b70, // Surface2
         
         // General
-        text_primary: 0x333333,
-        text_secondary: 0x666666,
-        accent: 0x0078d4,
-        shadow: 0x00000040,
+        text_primary: 0xcdd6f4,
+        text_secondary: 0xa6adc8,
+        accent: 0xcba6f7, // Mauve
+        shadow: 0x00000060,
     };
     
     /// Cyberpunk neon theme
@@ -123,10 +132,13 @@ impl Theme {
         // Window
         window_bg: 0x150734,
         window_border: 0xff00ff,
+        window_border_active_start: 0xff00ff,
+        window_border_active_end: 0x00ff88,
         window_title_bg: 0x2a0f4a,
         window_title_bg_inactive: 0x1a0533,
         window_title_text: 0x00ff88,
         window_title_height: 28,
+        window_radius: 4,
         
         // Neon buttons
         button_close: 0xff0055,
@@ -142,7 +154,7 @@ impl Theme {
     };
 }
 
-/// Get the current theme (default: Dark)
+/// Get the current theme (default: Hyprland)
 pub fn current() -> &'static Theme {
-    &Theme::DARK
+    &Theme::HYPRLAND
 }

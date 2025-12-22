@@ -4,6 +4,7 @@
 
 use super::{with_server, DisplayServer};
 use crate::drivers::framebuffer;
+use crate::gui::theme;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -12,56 +13,6 @@ const MAX_BUFFER_SIZE: usize = 1920 * 1080;
 
 /// Static back buffer for double-buffering
 static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
-
-/// Theme colors
-pub struct Theme {
-    pub background_top: u32,
-    pub background_bottom: u32,
-    pub taskbar_bg: u32,
-    pub taskbar_text: u32,
-    pub window_bg: u32,
-    pub window_title: u32,
-    pub window_title_inactive: u32,
-    pub window_border: u32,
-    pub button_close: u32,
-    pub button_maximize: u32,
-    pub button_minimize: u32,
-    pub accent: u32,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            background_top: 0x16213e,
-            background_bottom: 0x0f3460,
-            taskbar_bg: 0x252525,
-            taskbar_text: 0xffffff,
-            window_bg: 0x2d2d2d,
-            window_title: 0x383838,
-            window_title_inactive: 0x2a2a2a,
-            window_border: 0x3d3d3d,
-            button_close: 0xff5f57,
-            button_maximize: 0x28c840,
-            button_minimize: 0xfebc2e,
-            accent: 0x0a84ff,
-        }
-    }
-}
-
-static THEME: Theme = Theme {
-    background_top: 0x16213e,
-    background_bottom: 0x0f3460,
-    taskbar_bg: 0x252525,
-    taskbar_text: 0xffffff,
-    window_bg: 0x2d2d2d,
-    window_title: 0x383838,
-    window_title_inactive: 0x2a2a2a,
-    window_border: 0x3d3d3d,
-    button_close: 0xff5f57,
-    button_maximize: 0x28c840,
-    button_minimize: 0xfebc2e,
-    accent: 0x0a84ff,
-};
 
 /// Render the complete display with double-buffering
 pub fn render_frame() {
@@ -99,13 +50,14 @@ pub fn render_frame() {
 fn render_background_to_buffer(server: &DisplayServer) {
     let height = server.screen_height - server.taskbar_height;
     let width = server.screen_width;
+    let theme = theme::current();
     
     let mut buffer_guard = BACK_BUFFER.lock();
     if let Some(ref mut buffer) = *buffer_guard {
         // Render gradient directly to buffer
         for y in 0..height {
             let t = y as f32 / height as f32;
-            let color = lerp_color(THEME.background_top, THEME.background_bottom, t);
+            let color = lerp_color(theme.desktop_gradient_top, theme.desktop_gradient_bottom, t);
             let start = (y * width) as usize;
             let end = start + width as usize;
             if end <= buffer.len() {
@@ -118,77 +70,124 @@ fn render_background_to_buffer(server: &DisplayServer) {
 }
 
 fn render_windows_to_buffer(server: &DisplayServer) {
-    let title_height = 30u32;
     let screen_width = server.screen_width as usize;
+    let theme = theme::current();
     
     let mut buffer_guard = BACK_BUFFER.lock();
     if let Some(ref mut buffer) = *buffer_guard {
+        // Draw windows from back to front
         for window in server.windows_sorted() {
             if !window.visible {
                 continue;
             }
             
-            let wx = window.x.max(0) as usize;
-            let wy = window.y.max(0) as usize;
+            let wx = window.x;
+            let wy = window.y;
+            let ww = window.width as i32;
+            let wh = window.height as i32;
+            let radius = theme.window_radius as i32;
             
-            // Window background
-            for dy in 0..window.height as usize {
-                let row_start = (wy + dy) * screen_width + wx;
-                for dx in 0..window.width as usize {
-                    if row_start + dx < buffer.len() {
-                        buffer[row_start + dx] = THEME.window_bg;
-                    }
+            // Draw Shadow
+            draw_shadow(buffer, screen_width, wx, wy, ww, wh, radius, theme.shadow);
+            
+            // Draw Window Background (Rounded)
+            draw_rounded_rect(buffer, screen_width, wx, wy, ww, wh, radius, theme.window_bg);
+            
+            // Draw Border
+            let border_color = if window.focused {
+                 // Simple gradient effect for active border based on position
+                 theme.window_border_active_start
+            } else {
+                theme.window_border
+            };
+            
+            // We draw border by drawing a larger rounded rect behind? Or stroking?
+            // Simple stroke for now:
+             draw_rounded_outline(buffer, screen_width, wx, wy, ww, wh, radius, 2, border_color);
+
+            // Title bar (Only if decorated/floating)
+            let content_y_offset = if window.decorated {
+                let title_h = theme.window_title_height as i32;
+                
+                // Title bar background (top rounded only)
+                // For simplicity, just draw rect on top part
+                // draw_rounded_rect_top(buffer, screen_width, wx, wy, ww, title_h, radius, theme.window_title_bg);
+                
+                // Buttons
+                if window.focused {
+                     draw_circle_to_buffer(buffer, screen_width, wx + 16, wy + 15, 6, theme.button_close);
+                     draw_circle_to_buffer(buffer, screen_width, wx + 36, wy + 15, 6, theme.button_maximize);
+                     draw_circle_to_buffer(buffer, screen_width, wx + 56, wy + 15, 6, theme.button_minimize);
                 }
-            }
+                
+                title_h
+            } else {
+                0
+            };
             
-            // Title bar
-            let title_color = if window.focused { THEME.window_title } else { THEME.window_title_inactive };
-            for dy in 0..title_height as usize {
-                let row_start = (wy + dy) * screen_width + wx;
-                for dx in 0..window.width as usize {
-                    if row_start + dx < buffer.len() {
-                        buffer[row_start + dx] = title_color;
-                    }
-                }
-            }
-            
-            // Window buttons (macOS style)
-            draw_circle_to_buffer(buffer, screen_width, window.x + 16, window.y + 15, 6, THEME.button_close);
-            draw_circle_to_buffer(buffer, screen_width, window.x + 36, window.y + 15, 6, THEME.button_maximize);
-            draw_circle_to_buffer(buffer, screen_width, window.x + 56, window.y + 15, 6, THEME.button_minimize);
-            
-            // Title text (use framebuffer text for now - will render on top)
-            // Border
-            draw_rect_outline_to_buffer(buffer, screen_width, window.x, window.y, window.width, window.height, THEME.window_border);
-            
-            // Render surface content
-            render_surface_to_buffer(buffer, screen_width, window.surface_id, window.x, window.y + title_height as i32, 
-                                    window.width, window.height - title_height);
+            // Render surface content clipped to rounded rect
+            render_surface_clipped(buffer, screen_width, window.surface_id, 
+                                 wx, wy + content_y_offset, 
+                                 window.width, window.height - content_y_offset as u32, radius);
         }
     }
     
-    // Draw window titles (done separately to use framebuffer text rendering)
+    // Draw window titles separately (text rendering on top)
     for window in server.windows_sorted() {
-        if window.visible {
-            draw_text(window.x + 80, window.y + 8, &window.title, THEME.taskbar_text);
+        if window.visible && window.decorated {
+            draw_text(window.x + 80, window.y + 8, &window.title, theme.taskbar_text);
         }
     }
 }
 
-fn render_surface_to_buffer(buffer: &mut [u32], screen_width: usize, surface_id: u64, x: i32, y: i32, w: u32, h: u32) {
+fn render_surface_clipped(buffer: &mut [u32], screen_width: usize, surface_id: u64, x: i32, y: i32, w: u32, h: u32, radius: i32) {
     crate::graphics::with_server(|gs| {
         if let Some(surface) = gs.get_surface_mut(surface_id) {
             let bytes_per_pixel = surface.format.bytes_per_pixel();
             
-            for dy in 0..h as usize {
-                for dx in 0..w as usize {
-                    let buf_x = (x as usize).saturating_add(dx);
-                    let buf_y = (y as usize).saturating_add(dy);
-                    let buf_idx = buf_y * screen_width + buf_x;
+            for dy in 0..h as i32 {
+                for dx in 0..w as i32 {
+                    // Check rounded clip
+                    // This is a simplified check. Ideally we map local coords to check against radius.
+                    // For typical "bottom" of window in tiling, we might not need rounding at bottom if it hits screen edge.
+                    // But let's assume fully rounded for "floating" feel even when tiled.
                     
-                    let surf_idx = (dy * w as usize + dx) * bytes_per_pixel;
+                    let buf_x = x + dx;
+                    let buf_y = y + dy;
                     
-                    if buf_idx < buffer.len() && surf_idx + 3 < surface.pixels.len() {
+                    if buf_x < 0 || buf_x >= screen_width as i32 || buf_y < 0 { continue; }
+                     // Note: We skip height check for buffer len safety later
+                    
+                    let buf_idx = (buf_y as usize) * screen_width + (buf_x as usize);
+                    
+                    if buf_idx >= buffer.len() { continue; }
+                    
+                    // Simple clipping: if pixel is outside rounded corners
+                    // Top-left
+                    if dx < radius && dy < radius {
+                        if (radius - dx).pow(2) + (radius - dy).pow(2) > radius.pow(2) { continue; }
+                    }
+                    // Top-right
+                     if dx >= (w as i32 - radius) && dy < radius {
+                        if (dx - (w as i32 - radius)).pow(2) + (radius - dy).pow(2) > radius.pow(2) { continue; }
+                    }
+                    // Bottom-left
+                    if dx < radius && dy >= (h as i32 - radius) {
+                         if (radius - dx).pow(2) + (dy - (h as i32 - radius)).pow(2) > radius.pow(2) { continue; }
+                    }
+                    // Bottom-right
+                     if dx >= (w as i32 - radius) && dy >= (h as i32 - radius) {
+                         if (dx - (w as i32 - radius)).pow(2) + (dy - (h as i32 - radius)).pow(2) > radius.pow(2) { continue; }
+                    }
+
+                    // Use surface width for stride, not window width
+                    let surf_w = surface.width as usize;
+                    // If we go out of bounds of the surface (e.g. window larger than content), skip or fill black
+                    if dx as usize >= surf_w || dy as usize >= surface.height as usize { continue; }
+
+                    let surf_idx = (dy as usize * surf_w + dx as usize) * bytes_per_pixel;
+                    
+                    if surf_idx + 3 < surface.pixels.len() {
                         let r = surface.pixels[surf_idx] as u32;
                         let g = surface.pixels[surf_idx + 1] as u32;
                         let b = surface.pixels[surf_idx + 2] as u32;
@@ -205,6 +204,7 @@ fn render_taskbar_to_buffer(server: &DisplayServer) {
         return;
     }
     
+    let theme = theme::current();
     let y = (server.screen_height - server.taskbar_height) as usize;
     let width = server.screen_width as usize;
     let bar_height = server.taskbar_height as usize;
@@ -216,98 +216,71 @@ fn render_taskbar_to_buffer(server: &DisplayServer) {
             let row_start = (y + dy) * width;
             for dx in 0..width {
                 if row_start + dx < buffer.len() {
-                    buffer[row_start + dx] = THEME.taskbar_bg;
+                    buffer[row_start + dx] = theme.taskbar_bg;
                 }
             }
         }
         
-        // Start button
-        for dy in 5..35 {
-            let row_start = (y + dy) * width;
-            for dx in 10..70 {
-                if row_start + dx < buffer.len() {
-                    buffer[row_start + dx] = 0x3d3d3d;
-                }
-            }
-        }
+        // Start button pill
+        draw_rounded_rect_raw(buffer, width, 10, y as i32 + 5, 60, 28, 14, theme.taskbar_button_bg);
         
-        // Window buttons
-        let mut btn_x = 80usize;
+        // Window pills
+        let mut btn_x = 80;
         for window in server.windows_sorted() {
-            let btn_color = if window.focused { THEME.accent } else { 0x3d3d3d };
-            for dy in 5..35 {
-                let row_start = (y + dy) * width;
-                for dx in 0..100 {
-                    let px = btn_x + dx;
-                    if row_start + px < buffer.len() {
-                        buffer[row_start + px] = btn_color;
-                    }
-                }
-            }
-            btn_x += 110;
-            if btn_x > width - 150 {
-                break;
+            if window.visible {
+                let btn_color = if window.focused { theme.accent } else { theme.taskbar_button_bg };
+                draw_rounded_rect_raw(buffer, width, btn_x, y as i32 + 5, 100, 28, 8, btn_color);
+                
+                btn_x += 110;
+                if btn_x > width as i32 - 150 { break; }
             }
         }
         
-        // Clock background
-        let clock_x = width - 70;
-        for dy in 5..35 {
-            let row_start = (y + dy) * width;
-            for dx in 0..60 {
-                if row_start + clock_x + dx < buffer.len() {
-                    buffer[row_start + clock_x + dx] = 0x3d3d3d;
-                }
-            }
-        }
+        // Clock pill
+        let clock_x = width as i32 - 90;
+        draw_rounded_rect_raw(buffer, width, clock_x, y as i32 + 5, 80, 28, 14, theme.taskbar_button_bg);
     }
     
-    // Draw text labels (using framebuffer text)
+    // Draw text labels
     let tb_y = (server.screen_height - server.taskbar_height) as i32;
-    draw_text(20, tb_y + 12, "Start", THEME.taskbar_text);
+    draw_text(20, tb_y + 10, "Start", theme.taskbar_text);
     
-    let mut btn_x = 80u32;
+    let mut btn_x = 80;
     for window in server.windows_sorted() {
-        let title: alloc::string::String = if window.title.len() > 10 {
-            alloc::format!("{}...", &window.title[..8])
-        } else {
-            window.title.clone()
-        };
-        draw_text((btn_x + 8) as i32, tb_y + 12, &title, THEME.taskbar_text);
-        btn_x += 110;
-        if btn_x > server.screen_width - 150 {
-            break;
+         if window.visible {
+            let title: alloc::string::String = if window.title.len() > 10 {
+                alloc::format!("{}...", &window.title[..8])
+            } else {
+                window.title.clone()
+            };
+            draw_text(btn_x + 10, tb_y + 10, &title, theme.taskbar_text);
+            btn_x += 110;
+             if btn_x > server.screen_width as i32 - 150 { break; }
         }
     }
     
-    // Clock
     let time_str = crate::drivers::rtc::format_time();
-    draw_text((server.screen_width - 60) as i32, tb_y + 12, &time_str, THEME.taskbar_text);
+    draw_text((server.screen_width - 80) as i32, tb_y + 10, &time_str, theme.taskbar_text);
 }
 
+
 fn render_cursor_to_buffer(server: &DisplayServer) {
+    // ... Cursor rendering remains same ...
     let (mx, my) = crate::drivers::mouse::get_position();
     let is_clicking = crate::drivers::mouse::is_left_pressed();
     let screen_width = server.screen_width as usize;
+    let theme = theme::current();
     
-    let fill_color = if is_clicking { 0x00AAFF } else { 0xFFFFFF };
+    let fill_color = if is_clicking { theme.accent } else { 0xFFFFFF };
     let outline_color = 0x000000;
     
+    // Simple cursor shape
     let cursor_rows: &[(i32, i32)] = &[
-        (0, 0),
-        (0, 1), (1, 1),
-        (0, 2), (1, 2), (2, 2),
-        (0, 3), (1, 3), (2, 3), (3, 3),
-        (0, 4), (1, 4), (2, 4), (3, 4), (4, 4),
-        (0, 5), (1, 5), (2, 5), (3, 5), (4, 5), (5, 5),
-        (0, 6), (1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6),
-        (0, 7), (1, 7), (2, 7), (3, 7), (4, 7), (5, 7),
-        (0, 8), (1, 8), (2, 8), (3, 8), (4, 8), (5, 8),
-        (0, 9), (1, 9), (2, 9), (3, 9),
-        (0, 10), (1, 10), (4, 10), (5, 10),
-        (0, 11), (1, 11), (4, 11), (5, 11), (6, 11),
-        (5, 12), (6, 12), (7, 12),
-        (6, 13), (7, 13),
+        (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6),
+        (1, 1), (1, 2), (1, 3), (1, 4), (1, 5),
+        (2, 2), (2, 3), (2, 4), (2, 5),
+        (3, 3), (3, 4),
+        (4, 4),
     ];
     
     let mut buffer_guard = BACK_BUFFER.lock();
@@ -327,30 +300,180 @@ fn render_cursor_to_buffer(server: &DisplayServer) {
                 }
             }
         }
-        
-        // Draw fill
-        for &(dx, dy) in cursor_rows {
+
+         for &(dx, dy) in cursor_rows {
             let x = (mx + dx) as usize;
             let y = (my + dy) as usize;
             let idx = y * screen_width + x;
             if idx < buffer.len() {
                 buffer[idx] = fill_color;
             }
+         }
+    }
+}
+
+// --- Graphical Primitives ---
+
+fn draw_rounded_rect(buffer: &mut [u32], screen_width: usize, x: i32, y: i32, w: i32, h: i32, radius: i32, color: u32) {
+    draw_rounded_rect_raw(buffer, screen_width, x, y, w, h, radius, color);
+}
+
+fn draw_rounded_rect_raw(buffer: &mut [u32], screen_width: usize, x: i32, y: i32, w: i32, h: i32, radius: i32, color: u32) {
+     for dy in 0..h {
+        for dx in 0..w {
+            let screen_y = y + dy;
+            let screen_x = x + dx;
+             if screen_x < 0 || screen_x >= screen_width as i32 || screen_y < 0 { continue; }
+             
+             let buf_idx = (screen_y as usize) * screen_width + (screen_x as usize);
+             if buf_idx >= buffer.len() { continue; }
+             
+             // Check rounding
+             let mut inside = true;
+             if dx < radius && dy < radius { // Top-left
+                  if (radius - dx).pow(2) + (radius - dy).pow(2) > radius.pow(2) { inside = false; }
+             } else if dx >= (w - radius) && dy < radius { // Top-right
+                  if (dx - (w - radius)).pow(2) + (radius - dy).pow(2) > radius.pow(2) { inside = false; }
+             } else if dx < radius && dy >= (h - radius) { // Bottom-left
+                  if (radius - dx).pow(2) + (dy - (h - radius)).pow(2) > radius.pow(2) { inside = false; }
+             } else if dx >= (w - radius) && dy >= (h - radius) { // Bottom-right
+                  if (dx - (w - radius)).pow(2) + (dy - (h - radius)).pow(2) > radius.pow(2) { inside = false; }
+             }
+             
+             if inside {
+                 buffer[buf_idx] = color;
+             }
         }
     }
 }
 
-// Keep old functions for compatibility during transition
-#[allow(dead_code)]
-fn render_background_stub(_server: &DisplayServer) {}
-#[allow(dead_code)]
-fn render_windows_stub(_server: &DisplayServer) {}
-#[allow(dead_code)]
-fn render_taskbar_stub(_server: &DisplayServer) {}
-#[allow(dead_code)]
-fn render_cursor_stub(_server: &DisplayServer) {}
+fn draw_rounded_outline(buffer: &mut [u32], screen_width: usize, x: i32, y: i32, w: i32, h: i32, radius: i32, thickness: i32, color: u32) {
+    // Draw outer rounded rect then skip inner
+    // This is expensive but simple for implementation plan
+    // Optimized: Only iterate near edges
+    
+    // For now, full iteration is safer to implement correctly
+     for dy in 0..h {
+        for dx in 0..w {
+             // Optimization: Skip center
+             if dx > thickness + radius && dx < w - thickness - radius && dy > thickness + radius && dy < h - thickness - radius {
+                 continue;
+             }
+             
+             let screen_y = y + dy;
+             let screen_x = x + dx;
+              if screen_x < 0 || screen_x >= screen_width as i32 || screen_y < 0 { continue; }
+             let buf_idx = (screen_y as usize) * screen_width + (screen_x as usize);
+             if buf_idx >= buffer.len() { continue; }
 
-// Helper functions
+             let mut inside_outer = true;
+             if dx < radius && dy < radius {
+                  if (radius - dx).pow(2) + (radius - dy).pow(2) > radius.pow(2) { inside_outer = false; }
+             } else if dx >= (w - radius) && dy < radius {
+                  if (dx - (w - radius)).pow(2) + (radius - dy).pow(2) > radius.pow(2) { inside_outer = false; }
+             } else if dx < radius && dy >= (h - radius) {
+                  if (radius - dx).pow(2) + (dy - (h - radius)).pow(2) > radius.pow(2) { inside_outer = false; }
+             } else if dx >= (w - radius) && dy >= (h - radius) {
+                  if (dx - (w - radius)).pow(2) + (dy - (h - radius)).pow(2) > radius.pow(2) { inside_outer = false; }
+             }
+             
+             if !inside_outer { continue; }
+             
+             // Check strict interior
+             let inset = thickness;
+             let ir = radius.saturating_sub(thickness);
+             let idx = dx - inset;
+             let idy = dy - inset;
+             let iw = w - inset * 2;
+             let ih = h - inset * 2;
+             
+             let mut is_border = false;
+             
+             if idx < 0 || idy < 0 || idx >= iw || idy >= ih {
+                 is_border = true;
+             } else {
+                 // Check inner corners
+                 if idx < ir && idy < ir { 
+                     if (ir - idx).pow(2) + (ir - idy).pow(2) > ir.pow(2) { is_border = true; }
+                 } else if idx >= (iw - ir) && idy < ir {
+                     if (idx - (iw - ir)).pow(2) + (ir - idy).pow(2) > ir.pow(2) { is_border = true; }
+                 } else if idx < ir && idy >= (ih - ir) {
+                     if (ir - idx).pow(2) + (idy - (ih - ir)).pow(2) > ir.pow(2) { is_border = true; }
+                 } else if idx >= (iw - ir) && idy >= (ih - ir) {
+                      if (idx - (iw - ir)).pow(2) + (idy - (ih - ir)).pow(2) > ir.pow(2) { is_border = true; }
+                 }
+             }
+             
+             if is_border {
+                  buffer[buf_idx] = color;
+             }
+        }
+     }
+}
+
+fn draw_shadow(buffer: &mut [u32], screen_width: usize, x: i32, y: i32, w: i32, h: i32, radius: i32, shadow_color: u32) {
+    // Simple drop shadow: Offset by 4px, slightly larger, alpha blended
+    let offset = 8;
+    let blur_radius = 4; // Fake blur by expanding
+    let sx = x + offset;
+    let sy = y + offset;
+    let sw = w;
+    let sh = h;
+    let s_radius = radius;
+    
+    // Very simple optimization: Just draw a transparent box behind
+    let alpha = (shadow_color) & 0xFF; // Stored in low byte in theme
+    if alpha == 0 { return; }
+    
+    // We only support full alpha compositing in software if we read back? 
+    // buffer contains valid data.
+    
+    // Just draw a dark rect with alpha
+    for dy in 0..sh {
+        for dx in 0..sw {
+            // Optimization: Skip logic to only draw potentially visible shadow (right/bottom edges)
+            if dx < sw - offset - blur_radius && dy < sh - offset - blur_radius { continue; }
+
+            let screen_y = sy + dy;
+            let screen_x = sx + dx;
+            
+             if screen_x < 0 || screen_x >= screen_width as i32 || screen_y < 0 { continue; }
+             let buf_idx = (screen_y as usize) * screen_width + (screen_x as usize);
+             if buf_idx >= buffer.len() { continue; }
+             
+             // Check roundedness
+             let mut inside = true;
+             if dx < s_radius && dy < s_radius {
+                  if (s_radius - dx).pow(2) + (s_radius - dy).pow(2) > s_radius.pow(2) { inside = false; }
+             } else if dx >= (sw - s_radius) && dy < s_radius {
+                  if (dx - (sw - s_radius)).pow(2) + (s_radius - dy).pow(2) > s_radius.pow(2) { inside = false; }
+             } else if dx < s_radius && dy >= (sh - s_radius) {
+                  if (s_radius - dx).pow(2) + (dy - (sh - s_radius)).pow(2) > s_radius.pow(2) { inside = false; }
+             } else if dx >= (sw - s_radius) && dy >= (sh - s_radius) {
+                  if (dx - (sw - s_radius)).pow(2) + (dy - (sh - s_radius)).pow(2) > s_radius.pow(2) { inside = false; }
+             }
+             
+             if inside {
+                 let bg = buffer[buf_idx];
+                 // Simple blend: dst = src * a + dst * (1-a)
+                 // shadow is black/colored with alpha
+                 // Assuming shadow color is RGB... 
+                 // Actually theme.shadow is 0xRRGGBBAA usually? Or just alpha?
+                 // Theme says 0x00000060 -> Black with 0x60 alpha.
+                 
+                 let inv_a = 255 - alpha;
+                 // Shadow color (0,0,0)
+                 let r = ((bg >> 16) & 0xFF) * inv_a / 255;
+                 let g = ((bg >> 8) & 0xFF) * inv_a / 255;
+                 let b = (bg & 0xFF) * inv_a / 255;
+                 
+                 buffer[buf_idx] = (r << 16) | (g << 8) | b;
+             }
+        }
+    }
+}
+
+// Helper functions (same as before or updated)
 fn lerp_color(c1: u32, c2: u32, t: f32) -> u32 {
     let r1 = ((c1 >> 16) & 0xFF) as f32;
     let g1 = ((c1 >> 8) & 0xFF) as f32;
@@ -380,34 +503,7 @@ fn draw_circle_to_buffer(buffer: &mut [u32], screen_width: usize, cx: i32, cy: i
     }
 }
 
-fn draw_rect_outline_to_buffer(buffer: &mut [u32], screen_width: usize, x: i32, y: i32, w: u32, h: u32, color: u32) {
-    // Top and bottom
-    for dx in 0..w as usize {
-        let top_idx = (y as usize) * screen_width + (x as usize) + dx;
-        let bot_idx = ((y + h as i32 - 1) as usize) * screen_width + (x as usize) + dx;
-        if top_idx < buffer.len() {
-            buffer[top_idx] = color;
-        }
-        if bot_idx < buffer.len() {
-            buffer[bot_idx] = color;
-        }
-    }
-    
-    // Left and right
-    for dy in 0..h as usize {
-        let left_idx = ((y as usize) + dy) * screen_width + (x as usize);
-        let right_idx = ((y as usize) + dy) * screen_width + (x + w as i32 - 1) as usize;
-        if left_idx < buffer.len() {
-            buffer[left_idx] = color;
-        }
-        if right_idx < buffer.len() {
-            buffer[right_idx] = color;
-        }
-    }
-}
-
 fn draw_text(x: i32, y: i32, text: &str, color: u32) {
     framebuffer::set_cursor_pos(x as usize, y as usize);
     framebuffer::print_colored(text, color);
 }
-
