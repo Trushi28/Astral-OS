@@ -127,6 +127,10 @@ pub struct Process {
     // Ring 3 userspace fields
     pub user_stack: u64,        // User-mode stack top
     pub is_user_process: bool,  // True if this runs in Ring 3
+    // Heap/memory management (Ring 3 dynamic memory)
+    pub heap_start: u64,        // Start of heap (after BSS)
+    pub heap_end: u64,          // Current end of heap (brk/sbrk)
+    pub mmap_base: u64,         // Base for mmap allocations
     // AstralScheduler fields
     pub priority: PriorityClass,
     pub intent: ProcessIntent,
@@ -149,6 +153,9 @@ impl Process {
             kernel_stack: 0,
             user_stack: 0,
             is_user_process: false,
+            heap_start: 0,
+            heap_end: 0,
+            mmap_base: 0,
             priority: PriorityClass::Normal,
             intent: ProcessIntent::None,
             reality_id: 0,

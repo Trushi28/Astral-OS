@@ -10,7 +10,7 @@ const IA32_FMASK: u32 = 0xC0000084;
 const IA32_EFER: u32 = 0xC0000080;
 const IA32_KERNEL_GS_BASE: u32 = 0xC0000102;
 
-// Syscall numbers
+// Syscall numbers - only those handled directly here
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_READ: u64 = 0;
 pub const SYS_EXIT: u64 = 60;
@@ -18,23 +18,6 @@ pub const SYS_GETPID: u64 = 39;
 pub const SYS_YIELD: u64 = 24;
 pub const SYS_GETUID: u64 = 102;
 pub const SYS_YIELD_ALT: u64 = 158;  // Linux sched_yield syscall number
-
-// Shell-specific syscalls
-pub const SYS_FS_LIST: u64 = 200;
-pub const SYS_GET_PROCESS_INFO: u64 = 201;
-pub const SYS_GET_MEM_INFO: u64 = 202;
-pub const SYS_GET_CPU_INFO: u64 = 203;
-pub const SYS_CLEAR_SCREEN: u64 = 204;
-pub const SYS_GET_TIME: u64 = 205;
-pub const SYS_GET_UPTIME: u64 = 206;
-
-// HAL syscalls for shell I/O
-pub const SYS_PRINT: u64 = 210;
-pub const SYS_PRINT_COLORED: u64 = 211;
-pub const SYS_READ_CHAR: u64 = 212;
-pub const SYS_GET_CURSOR: u64 = 213;
-pub const SYS_SET_CURSOR: u64 = 214;
-pub const SYS_CLEAR_LINE: u64 = 215;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -367,110 +350,8 @@ extern "C" fn ring3_syscall_handler(
             0
         }
         
-        // Shell-specific syscalls
-        SYS_FS_LIST => {
-            // Returns number of files, writes names to serial for now
-            let files = crate::fs::psychicfs::fs_list();
-            crate::serial_println!("[SYSCALL] SYS_FS_LIST: {} files", files.len());
-            // Write file list to framebuffer directly (kernel handles it)
-            if files.is_empty() {
-                crate::drivers::framebuffer::print_colored("(empty)\n", 0xFFFFFF);
-            } else {
-                for file in &files {
-                    crate::drivers::framebuffer::print_colored(file, 0x88FF88);
-                    crate::drivers::framebuffer::print_colored("  ", 0xFFFFFF);
-                }
-                crate::drivers::framebuffer::print_colored("\n", 0xFFFFFF);
-            }
-            files.len() as u64
-        }
-        
-        SYS_GET_PROCESS_INFO => {
-            // Get process info and print it
-            let table = crate::process::process_table().lock();
-            crate::drivers::framebuffer::print_colored("PID  STATE     NAME\n", 0x88FFFF);
-            crate::drivers::framebuffer::print_colored("---  --------  ----\n", 0x888888);
-            
-            for proc in table.iter() {
-                let state = match proc.state {
-                    crate::process::ProcessState::Ready => "READY   ",
-                    crate::process::ProcessState::Running => "RUNNING ",
-                    crate::process::ProcessState::Blocked => "BLOCKED ",
-                    crate::process::ProcessState::Zombie => "ZOMBIE  ",
-                };
-                // Print PID and state
-                let pid = proc.pid.as_u64();
-                if pid >= 10 { 
-                    crate::drivers::framebuffer::print_char((b'0' + (pid / 10 % 10) as u8) as char, 0xFFFFFF);
-                }
-                crate::drivers::framebuffer::print_char((b'0' + (pid % 10) as u8) as char, 0xFFFFFF);
-                crate::drivers::framebuffer::print_colored("    ", 0xFFFFFF);
-                crate::drivers::framebuffer::print_colored(state, 0x88FF88);
-                crate::drivers::framebuffer::print_colored("\n", 0xFFFFFF);
-            }
-            
-            crate::drivers::framebuffer::print_colored("\nTotal: ", 0xFFFFFF);
-            let count = table.count();
-            if count >= 10 {
-                crate::drivers::framebuffer::print_char((b'0' + (count / 10 % 10) as u8) as char, 0xFFFFFF);
-            }
-            crate::drivers::framebuffer::print_char((b'0' + (count % 10) as u8) as char, 0xFFFFFF);
-            crate::drivers::framebuffer::print_colored(" processes\n", 0xFFFFFF);
-            
-            table.count() as u64
-        }
-        
-        SYS_GET_MEM_INFO => {
-            // Get memory stats and print them
-            let (total, used, free) = crate::memory::frame::get_stats();
-            crate::drivers::framebuffer::print_colored("Physical Memory:\n", 0x88FFFF);
-            crate::drivers::framebuffer::print_colored("  Total: ", 0xFFFFFF);
-            print_number_to_fb((total * 4 / 1024) as u64);
-            crate::drivers::framebuffer::print_colored(" MB\n", 0xFFFFFF);
-            crate::drivers::framebuffer::print_colored("  Free:  ", 0xFFFFFF);
-            print_number_to_fb((free * 4 / 1024) as u64);
-            crate::drivers::framebuffer::print_colored(" MB\n", 0xFFFFFF);
-            
-            // Return packed value
-            ((total as u64) << 32) | (free as u64)
-        }
-        
-        SYS_GET_CPU_INFO => {
-            // Get CPU info and print it
-            let cpu_count = crate::arch::x86_64::cpu::get_cpu_count();
-            crate::drivers::framebuffer::print_colored("CPU Information:\n", 0x88FFFF);
-            crate::drivers::framebuffer::print_colored("  Architecture: x86_64\n", 0xFFFFFF);
-            crate::drivers::framebuffer::print_colored("  Cores: ", 0xFFFFFF);
-            print_number_to_fb(cpu_count as u64);
-            crate::drivers::framebuffer::print_colored("\n", 0xFFFFFF);
-            crate::drivers::framebuffer::print_colored("  Mode: Long Mode (64-bit)\n", 0xFFFFFF);
-            
-            cpu_count as u64
-        }
-        
-        SYS_CLEAR_SCREEN => {
-            crate::drivers::framebuffer::clear();
-            0
-        }
-        
-        SYS_GET_TIME => {
-            // Get system time (uptime in ticks)
-            let ticks = crate::get_timestamp();
-            ticks
-        }
-        
-        SYS_GET_UPTIME => {
-            // Get uptime in seconds (assuming 100Hz timer)
-            let ticks = crate::get_timestamp();
-            let secs = ticks / 100;
-            crate::drivers::framebuffer::print_colored("Uptime: ", 0x88FFFF);
-            print_number_to_fb(secs);
-            crate::drivers::framebuffer::print_colored(" seconds\n", 0xFFFFFF);
-            secs
-        }
-        
-        // HAL syscalls for shell I/O
-        SYS_PRINT => {
+        // Shell I/O syscalls - handle directly for performance
+        210 => {  // SYS_PRINT
             // arg1 = string ptr, arg2 = length
             let ptr = arg1 as *const u8;
             let len = arg2 as usize;
@@ -483,16 +364,15 @@ extern "C" fn ring3_syscall_handler(
             0
         }
         
-        SYS_PRINT_COLORED => {
+        211 => {  // SYS_PRINT_COLORED
             // arg1 = string ptr, arg2 = length, arg3 = color
             let ptr = arg1 as *const u8;
             let len = arg2 as usize;
             let color = arg3 as u32;
             
-            // SAFETY: Limit length to prevent stack smash from corrupted args
             const MAX_PRINT_LEN: usize = 4096;
             if len > MAX_PRINT_LEN || ptr.is_null() {
-                return u64::MAX; // Error - corrupted args or bad pointer
+                return u64::MAX;
             }
             
             let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
@@ -502,7 +382,7 @@ extern "C" fn ring3_syscall_handler(
             0
         }
         
-        SYS_READ_CHAR => {
+        212 => {  // SYS_READ_CHAR
             // Non-blocking read - returns 0 if no char, or the char code
             match crate::interrupts::getchar() {
                 Some(c) => c as u64,
@@ -510,35 +390,30 @@ extern "C" fn ring3_syscall_handler(
             }
         }
         
-        SYS_GET_CURSOR => {
-            // Returns cursor position packed as (x << 32) | y
+        204 => {  // SYS_CLEAR_SCREEN
+            crate::drivers::framebuffer::clear();
+            0
+        }
+        
+        213 => {  // SYS_GET_CURSOR
             let (x, y) = crate::drivers::framebuffer::get_cursor_pos();
             ((x as u64) << 32) | (y as u64)
         }
         
-        SYS_SET_CURSOR => {
-            // arg1 = x, arg2 = y
+        214 => {  // SYS_SET_CURSOR
             crate::drivers::framebuffer::set_cursor_pos(arg1 as usize, arg2 as usize);
             0
         }
         
-        SYS_CLEAR_LINE => {
+        215 => {  // SYS_CLEAR_LINE
             crate::drivers::framebuffer::clear_line();
             0
         }
         
+        // All other syscalls (shell info, filesystem, power, etc.) are forwarded
         _ => {
-            crate::serial_println!("[SYSCALL] Unknown syscall: {}", syscall_num);
-            u64::MAX
+            // Forward to the extended syscall handler
+            crate::usermode::syscall::handle_syscall(syscall_num, arg1, arg2, arg3, _arg4, _arg5)
         }
     }
-}
-
-/// Helper to print a number to framebuffer
-fn print_number_to_fb(n: u64) {
-    if n >= 10 {
-        print_number_to_fb(n / 10);
-    }
-    let digit = (n % 10) as u8 + b'0';
-    crate::drivers::framebuffer::print_char(digit as char, 0xFFFFFF);
 }

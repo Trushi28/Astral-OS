@@ -878,23 +878,40 @@ fn find_contiguous_blocks(count: usize) -> Option<u32> {
     let mut fs = PSYCHIC_FS.lock();
     let pfs = fs.as_mut()?;
     
+    crate::serial_println!("[FS] find_contiguous_blocks: count={}, total_blocks={}, data_start={}", 
+        count, pfs.superblock.total_blocks, DATA_BLOCKS_START);
+    
+    // Check if range is valid
+    if DATA_BLOCKS_START as u32 >= pfs.superblock.total_blocks {
+        crate::serial_println!("[FS] find_contiguous_blocks: no data blocks available (total_blocks too small)");
+        return None;
+    }
+    
     let mut run_start = 0u32;
     let mut run_len = 0usize;
+    let mut checked = 0;
+    let mut allocated_count = 0;
     
     // Scan bitmap for contiguous free blocks
     for block in DATA_BLOCKS_START as u32..pfs.superblock.total_blocks {
+        checked += 1;
         if !pfs.is_block_allocated(block) {
             if run_len == 0 {
                 run_start = block;
             }
             run_len += 1;
             if run_len >= count {
+                crate::serial_println!("[FS] find_contiguous_blocks: found {} blocks at {}", run_len, run_start);
                 return Some(run_start);
             }
         } else {
+            allocated_count += 1;
             run_len = 0;
         }
     }
+    
+    crate::serial_println!("[FS] find_contiguous_blocks: checked {} blocks, {} allocated, {} in final run", 
+        checked, allocated_count, run_len);
     
     // Try single-block allocations if no contiguous run found
     if count == 1 {
@@ -928,20 +945,31 @@ fn allocate_contiguous_blocks(start: u32, count: u16) -> bool {
 }
 
 pub fn fs_write(name: &str, data: &[u8]) -> bool {
+    crate::serial_println!("[FS] fs_write: name='{}', data_len={}", name, data.len());
+    
     let (inode_num, mut inode) = match find_inode_by_name(name) {
         Some(i) => i,
         None => {
+            crate::serial_println!("[FS] fs_write: file not found, creating");
             if !fs_create(name) {
+                crate::serial_println!("[FS] fs_write: failed to create file");
                 return false;
             }
             match find_inode_by_name(name) {
                 Some(i) => i,
-                None => return false,
+                None => {
+                    crate::serial_println!("[FS] fs_write: file still not found after create");
+                    return false;
+                }
             }
         }
     };
     
+    crate::serial_println!("[FS] fs_write: found inode {}", inode_num);
+    
     let blocks_needed = (data.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    crate::serial_println!("[FS] fs_write: blocks_needed={}", blocks_needed);
+    
     if blocks_needed == 0 {
         inode.size = 0;
         inode.clear_extents();
@@ -963,29 +991,39 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
         let remaining = blocks_needed - blocks_allocated;
         let chunk_size = remaining.min(65535); // Max extent size
         
+        crate::serial_println!("[FS] fs_write: finding {} contiguous blocks", chunk_size);
+        
         // Find contiguous run
         if let Some(start_block) = find_contiguous_blocks(chunk_size) {
+            crate::serial_println!("[FS] fs_write: found blocks starting at {}", start_block);
             // Allocate and add extent
             allocate_contiguous_blocks(start_block, chunk_size as u16);
             if !inode.add_extent(start_block, chunk_size as u16) {
+                crate::serial_println!("[FS] fs_write: failed to add extent");
                 return false; // Out of extent slots
             }
             blocks_allocated += chunk_size;
         } else if chunk_size > 1 {
+            crate::serial_println!("[FS] fs_write: no {} contiguous blocks, trying 1", chunk_size);
             // Try smaller chunks
             if let Some(start_block) = find_contiguous_blocks(1) {
                 allocate_contiguous_blocks(start_block, 1);
                 if !inode.add_extent(start_block, 1) {
+                    crate::serial_println!("[FS] fs_write: failed to add single extent");
                     return false;
                 }
                 blocks_allocated += 1;
             } else {
+                crate::serial_println!("[FS] fs_write: out of disk space (no single block)");
                 return false; // Out of disk space
             }
         } else {
+            crate::serial_println!("[FS] fs_write: out of disk space");
             return false; // Out of disk space
         }
     }
+    
+    crate::serial_println!("[FS] fs_write: allocated {} blocks, now writing data", blocks_allocated);
     
     // Write data to allocated blocks
     let mut written = 0;
@@ -998,19 +1036,28 @@ pub fn fs_write(name: &str, data: &[u8]) -> bool {
             buffer[..end - start].copy_from_slice(&data[start..end]);
             
             if !disk_write_sector(phys_block as u64, &buffer) {
+                crate::serial_println!("[FS] fs_write: disk_write_sector failed for block {}", phys_block);
                 return false;
             }
             written += 1;
         } else {
+            crate::serial_println!("[FS] fs_write: get_physical_block({}) returned None", logical_block);
             return false;
         }
     }
+    
+    crate::serial_println!("[FS] fs_write: wrote {} blocks, updating inode", written);
     
     inode.size = data.len() as u32;
     inode.modified_time = crate::get_timestamp();
     inode.dirty = 1;
     
-    write_inode(inode_num, &inode) && { fs_sync(); true }
+    let result = write_inode(inode_num, &inode);
+    crate::serial_println!("[FS] fs_write: write_inode result={}", result);
+    if result {
+        fs_sync();
+    }
+    result
 }
 
 pub fn fs_read(name: &str) -> Option<Vec<u8>> {

@@ -19,6 +19,8 @@ const SYS_EXIT: u64 = 60;
 const SYS_YIELD: u64 = 158;
 const SYS_GETPID: u64 = 39;
 const SYS_GETUID: u64 = 102;
+const SYS_BRK: u64 = 12;
+const SYS_SBRK: u64 = 45;
 
 // Shell-specific syscalls
 const SYS_FS_LIST: u64 = 200;
@@ -27,6 +29,19 @@ const SYS_GET_MEM_INFO: u64 = 202;
 const SYS_GET_CPU_INFO: u64 = 203;
 const SYS_CLEAR_SCREEN: u64 = 204;
 const SYS_PRINT_COLORED: u64 = 211;
+
+// File system extended syscalls
+const SYS_FS_CREATE: u64 = 205;
+const SYS_FS_WRITE_FILE: u64 = 206;
+const SYS_FS_DELETE: u64 = 207;
+const SYS_FS_READ_FILE: u64 = 208;
+const SYS_FS_FORMAT: u64 = 213;
+const SYS_FS_MOUNT: u64 = 214;
+const SYS_FS_SYNC: u64 = 215;
+
+// Power syscalls
+const SYS_SHUTDOWN: u64 = 220;
+const SYS_REBOOT: u64 = 221;
 
 // ============================================================================
 // SYSCALL WRAPPERS
@@ -88,6 +103,27 @@ fn syscall3(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
             in("rdx") arg3,
             out("rcx") _,
             out("r11") _,
+            options(nostack)
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+fn syscall4(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") num => ret,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            out("rcx") _,
+            out("r11") _,
+            out("r8") _,
+            out("r9") _,
             options(nostack)
         );
     }
@@ -350,6 +386,26 @@ fn process_command(cmd: &[u8]) {
         cmd_version();
     } else if starts_with(cmd, b"exit") || starts_with(cmd, b"logout") || starts_with(cmd, b"quit") {
         cmd_exit();
+    // Filesystem commands
+    } else if starts_with(cmd, b"touch ") {
+        cmd_touch(&cmd[6..]);
+    } else if starts_with(cmd, b"write ") {
+        cmd_write(&cmd[6..]);
+    } else if starts_with(cmd, b"cat ") {
+        cmd_cat(&cmd[4..]);
+    } else if starts_with(cmd, b"rm ") {
+        cmd_rm(&cmd[3..]);
+    } else if starts_with(cmd, b"format") {
+        cmd_format();
+    } else if starts_with(cmd, b"mount") {
+        cmd_mount();
+    } else if starts_with(cmd, b"sync") {
+        cmd_sync();
+    // Power commands
+    } else if starts_with(cmd, b"shutdown") {
+        cmd_shutdown();
+    } else if starts_with(cmd, b"reboot") {
+        cmd_reboot();
     } else {
         print_colored("Unknown command: ", COLOR_RED);
         // Print the command
@@ -383,6 +439,16 @@ fn cmd_help() {
     print_colored("Files:\n", COLOR_CYAN);
     print("  ls        - List files\n");
     print("  pwd       - Show current directory\n");
+    print("  touch <f> - Create empty file\n");
+    print("  cat <f>   - Display file contents\n");
+    print("  write <f> <text> - Write to file\n");
+    print("  rm <f>    - Delete file\n");
+    print("\n");
+    
+    print_colored("Filesystem:\n", COLOR_CYAN);
+    print("  format    - Format filesystem (root only)\n");
+    print("  mount     - Mount filesystem\n");
+    print("  sync      - Sync filesystem to disk\n");
     print("\n");
     
     print_colored("Monitor:\n", COLOR_CYAN);
@@ -397,6 +463,11 @@ fn cmd_help() {
     print("  clear     - Clear screen\n");
     print("  whoami    - Current user\n");
     print("  date      - Current time\n");
+    print("\n");
+    
+    print_colored("Power:\n", COLOR_CYAN);
+    print("  shutdown  - Shutdown system (root only)\n");
+    print("  reboot    - Reboot system (root only)\n");
 }
 
 fn cmd_info() {
@@ -485,6 +556,137 @@ fn cmd_pid() {
 fn cmd_exit() {
     print_colored("Goodbye!\n", COLOR_GREEN);
     exit(0);
+}
+
+// ============================================================================
+// FILESYSTEM COMMANDS
+// ============================================================================
+
+fn cmd_touch(args: &[u8]) {
+    if args.is_empty() {
+        print("Usage: touch <filename>\n");
+        return;
+    }
+    let result = syscall3(SYS_FS_CREATE, args.as_ptr() as u64, args.len() as u64, 0);
+    if result == 0 {
+        print_colored("Created\n", COLOR_GREEN);
+    } else {
+        print_colored("Failed to create file\n", COLOR_RED);
+    }
+}
+
+fn cmd_cat(args: &[u8]) {
+    if args.is_empty() {
+        print("Usage: cat <filename>\n");
+        return;
+    }
+    // Read file into buffer (max 4KB)
+    let mut buf = [0u8; 4096];
+    let result = syscall4(SYS_FS_READ_FILE, args.as_ptr() as u64, args.len() as u64,
+                          buf.as_mut_ptr() as u64, buf.len() as u64);
+    // Check for error (high bits set = negative errno)
+    if result < 0xFFFF_FFFF_0000_0000 {
+        if result > 0 {
+            // Print file contents
+            syscall3(SYS_WRITE, 1, buf.as_ptr() as u64, result);
+            print("\n");
+        } else {
+            // Empty file
+            print("(empty file)\n");
+        }
+    } else {
+        print_colored("File not found\n", COLOR_RED);
+    }
+}
+
+fn cmd_write(args: &[u8]) {
+    // Parse: filename content
+    // Find first space
+    let mut space_idx = None;
+    for (i, &b) in args.iter().enumerate() {
+        if b == b' ' {
+            space_idx = Some(i);
+            break;
+        }
+    }
+    
+    match space_idx {
+        Some(idx) if idx < args.len() - 1 => {
+            let filename = &args[..idx];
+            let content = &args[idx + 1..];
+            
+            let result = syscall4(SYS_FS_WRITE_FILE, filename.as_ptr() as u64, filename.len() as u64,
+                                  content.as_ptr() as u64, content.len() as u64);
+            if result > 0 && result < 0xFFFF_FFFF_0000_0000 {
+                print_colored("Written successfully\n", COLOR_GREEN);
+            } else {
+                print_colored("Write failed\n", COLOR_RED);
+            }
+        }
+        _ => {
+            print("Usage: write <filename> <content>\n");
+        }
+    }
+}
+
+fn cmd_rm(args: &[u8]) {
+    if args.is_empty() {
+        print("Usage: rm <filename>\n");
+        return;
+    }
+    let result = syscall3(SYS_FS_DELETE, args.as_ptr() as u64, args.len() as u64, 0);
+    if result == 0 {
+        print_colored("Deleted\n", COLOR_GREEN);
+    } else {
+        print_colored("File not found\n", COLOR_RED);
+    }
+}
+
+fn cmd_format() {
+    print_colored("WARNING: This will erase all data!\n", COLOR_YELLOW);
+    print("Formatting filesystem...\n");
+    let result = syscall0(SYS_FS_FORMAT);
+    if result == 0 {
+        print_colored("Format complete!\n", COLOR_GREEN);
+    } else if result == 0xFFFF_FFFF_FFFF_FFFD { // Permission denied (-3)
+        print_colored("Permission denied (root only)\n", COLOR_RED);
+    } else {
+        print_colored("Format failed\n", COLOR_RED);
+    }
+}
+
+fn cmd_mount() {
+    let result = syscall0(SYS_FS_MOUNT);
+    if result == 0 {
+        print_colored("Filesystem mounted!\n", COLOR_GREEN);
+    } else {
+        print_colored("Mount failed - try 'format' first\n", COLOR_RED);
+    }
+}
+
+fn cmd_sync() {
+    syscall0(SYS_FS_SYNC);
+    print_colored("Filesystem synced\n", COLOR_GREEN);
+}
+
+// ============================================================================
+// POWER COMMANDS
+// ============================================================================
+
+fn cmd_shutdown() {
+    print("Shutting down...\n");
+    let result = syscall0(SYS_SHUTDOWN);
+    if result != 0 {
+        print_colored("Permission denied (root only)\n", COLOR_RED);
+    }
+}
+
+fn cmd_reboot() {
+    print("Rebooting...\n");
+    let result = syscall0(SYS_REBOOT);
+    if result != 0 {
+        print_colored("Permission denied (root only)\n", COLOR_RED);
+    }
 }
 
 // ============================================================================

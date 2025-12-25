@@ -23,6 +23,8 @@ pub const SYS_KILL: u64 = 62;
 pub const SYS_UNAME: u64 = 63;
 pub const SYS_YIELD: u64 = 158;
 pub const SYS_GETUID: u64 = 102;
+pub const SYS_BRK: u64 = 12;
+pub const SYS_SBRK: u64 = 45;
 
 // Astral OS specific syscalls (starting from 1000)
 pub const SYS_REALITY_FORK: u64 = 1000;
@@ -44,6 +46,20 @@ pub const SYS_GET_PROCESS_INFO: u64 = 201;
 pub const SYS_GET_MEM_INFO: u64 = 202;
 pub const SYS_GET_CPU_INFO: u64 = 203;
 pub const SYS_CLEAR_SCREEN: u64 = 204;
+pub const SYS_PRINT_COLORED: u64 = 211;
+
+// File system extended syscalls
+pub const SYS_FS_CREATE: u64 = 205;
+pub const SYS_FS_WRITE_FILE: u64 = 206;
+pub const SYS_FS_DELETE: u64 = 207;
+pub const SYS_FS_READ_FILE: u64 = 208;
+pub const SYS_FS_FORMAT: u64 = 213;
+pub const SYS_FS_MOUNT: u64 = 214;
+pub const SYS_FS_SYNC: u64 = 215;
+
+// Power syscalls
+pub const SYS_SHUTDOWN: u64 = 220;
+pub const SYS_REBOOT: u64 = 221;
 
 /// System call result
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -88,6 +104,10 @@ pub fn handle_syscall(
         SYS_YIELD => sys_yield(),
         SYS_GETUID => sys_getuid(),
         
+        // Memory management
+        SYS_BRK => sys_brk(arg1),
+        SYS_SBRK => sys_sbrk(arg1 as i64),
+        
         // Astral OS specific
         SYS_REALITY_FORK => sys_reality_fork(),
         SYS_REALITY_MERGE => sys_reality_merge(arg1),
@@ -108,6 +128,20 @@ pub fn handle_syscall(
         SYS_GET_MEM_INFO => sys_get_mem_info(),
         SYS_GET_CPU_INFO => sys_get_cpu_info(),
         SYS_CLEAR_SCREEN => sys_clear_screen(),
+        SYS_PRINT_COLORED => sys_print_colored(arg1 as *const u8, arg2 as usize, arg3 as u32),
+        
+        // File system extended
+        SYS_FS_CREATE => sys_fs_create(arg1 as *const u8, arg2 as usize),
+        SYS_FS_WRITE_FILE => sys_fs_write_file(arg1 as *const u8, arg2 as usize, arg3 as *const u8, arg4 as usize),
+        SYS_FS_DELETE => sys_fs_delete(arg1 as *const u8, arg2 as usize),
+        SYS_FS_READ_FILE => sys_fs_read_file(arg1 as *const u8, arg2 as usize, arg3 as *mut u8, arg4 as usize),
+        SYS_FS_FORMAT => sys_fs_format(),
+        SYS_FS_MOUNT => sys_fs_mount(),
+        SYS_FS_SYNC => sys_fs_sync(),
+        
+        // Power
+        SYS_SHUTDOWN => sys_shutdown(),
+        SYS_REBOOT => sys_reboot(),
         
         _ => Err(SyscallError::InvalidSyscall),
     };
@@ -469,4 +503,278 @@ unsafe fn read_user_string(ptr: *const u8, max_len: usize) -> Result<&'static st
     let slice = slice::from_raw_parts(ptr, len);
     core::str::from_utf8(slice)
         .map_err(|_| SyscallError::InvalidArgument)
+}
+
+// ============================================================================
+// Memory Management Syscalls
+// ============================================================================
+
+/// Get or set the program break (heap end)
+/// If addr is 0, returns current break
+/// Otherwise, sets new break and returns new break address
+fn sys_brk(addr: u64) -> SyscallResult {
+    let pid = get_current_pid().ok_or(SyscallError::InvalidArgument)?;
+    let mut table = crate::process::process_table().lock();
+    let proc = table.get_mut(pid).ok_or(SyscallError::InvalidArgument)?;
+    
+    if addr == 0 {
+        // Query current break
+        return Ok(proc.heap_end);
+    }
+    
+    // Validate new break is in user space and not below heap start
+    if addr < proc.heap_start || addr >= 0x0000_7000_0000_0000 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    
+    let old_end = proc.heap_end;
+    let new_end = crate::util::align_up(addr as usize, crate::PAGE_SIZE) as u64;
+    
+    if new_end > old_end {
+        // Growing heap - need to map new pages
+        let page_table_phys = proc.page_table;
+        drop(table); // Release lock before memory operations
+        
+        let mut page_table = crate::memory::PageTableManager::from_phys(
+            crate::memory::PhysAddr::new(page_table_phys)
+        );
+        
+        let start_page = crate::util::align_up(old_end as usize, crate::PAGE_SIZE) as u64;
+        let num_pages = ((new_end - start_page) as usize + crate::PAGE_SIZE - 1) / crate::PAGE_SIZE;
+        
+        let hhdm = crate::get_hhdm_offset();
+        let flags = crate::memory::PageTableEntry::PRESENT 
+            | crate::memory::PageTableEntry::WRITABLE 
+            | crate::memory::PageTableEntry::USER
+            | crate::memory::PageTableEntry::NO_EXECUTE;
+        
+        for i in 0..num_pages {
+            let page_virt = start_page + (i * crate::PAGE_SIZE) as u64;
+            
+            // Check if page already mapped
+            if page_table.translate(crate::memory::VirtAddr::new(page_virt)).is_some() {
+                continue;
+            }
+            
+            let frame = crate::memory::frame::allocate_frame()
+                .ok_or(SyscallError::OutOfMemory)?;
+            
+            // Zero the new page
+            unsafe {
+                let ptr = (frame.as_u64() as usize + hhdm) as *mut u8;
+                core::ptr::write_bytes(ptr, 0, crate::PAGE_SIZE);
+            }
+            
+            page_table.map(crate::memory::VirtAddr::new(page_virt), frame, flags)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+        
+        // Update heap_end in process
+        let mut table = crate::process::process_table().lock();
+        if let Some(proc) = table.get_mut(pid) {
+            proc.heap_end = new_end;
+        }
+    } else if new_end < old_end {
+        // Shrinking heap - could unmap pages (optional, leave mapped for now)
+        proc.heap_end = new_end;
+    }
+    
+    Ok(new_end)
+}
+
+/// Increment/decrement the program break by given amount
+/// Returns the OLD break address (before change)
+fn sys_sbrk(increment: i64) -> SyscallResult {
+    let pid = get_current_pid().ok_or(SyscallError::InvalidArgument)?;
+    
+    let (old_break, new_break) = {
+        let table = crate::process::process_table().lock();
+        let proc = table.get(pid).ok_or(SyscallError::InvalidArgument)?;
+        let old = proc.heap_end;
+        let new = if increment >= 0 {
+            old.checked_add(increment as u64).ok_or(SyscallError::InvalidArgument)?
+        } else {
+            old.checked_sub((-increment) as u64).ok_or(SyscallError::InvalidArgument)?
+        };
+        (old, new)
+    };
+    
+    if increment != 0 {
+        // Set the new break
+        sys_brk(new_break)?;
+    }
+    
+    Ok(old_break)
+}
+
+// ============================================================================
+// File System Extended Syscalls
+// ============================================================================
+
+fn sys_print_colored(buf: *const u8, len: usize, color: u32) -> SyscallResult {
+    if buf.is_null() || len == 0 || !is_user_pointer_valid(buf, len) {
+        return Err(SyscallError::InvalidArgument);
+    }
+    
+    unsafe {
+        let data = slice::from_raw_parts(buf, len);
+        if let Ok(s) = core::str::from_utf8(data) {
+            crate::drivers::framebuffer::print_colored(s, color);
+            return Ok(len as u64);
+        }
+    }
+    
+    Err(SyscallError::InvalidArgument)
+}
+
+fn sys_fs_create(path_ptr: *const u8, path_len: usize) -> SyscallResult {
+    crate::serial_println!("[SYSCALL] sys_fs_create: path_ptr={:?}, path_len={}", path_ptr, path_len);
+    
+    if path_ptr.is_null() || path_len == 0 {
+        crate::serial_println!("[SYSCALL] sys_fs_create: invalid path");
+        return Err(SyscallError::InvalidArgument);
+    }
+    
+    unsafe {
+        let path = read_user_string(path_ptr, path_len)?;
+        crate::serial_println!("[SYSCALL] sys_fs_create: creating file '{}'", path);
+        if crate::fs::fs_create(path) {
+            crate::serial_println!("[SYSCALL] sys_fs_create: success");
+            Ok(0)
+        } else {
+            crate::serial_println!("[SYSCALL] sys_fs_create: fs_create failed");
+            Err(SyscallError::IoError)
+        }
+    }
+}
+
+fn sys_fs_write_file(path_ptr: *const u8, path_len: usize, data_ptr: *const u8, data_len: usize) -> SyscallResult {
+    crate::serial_println!("[SYSCALL] sys_fs_write_file: path_ptr={:?}, path_len={}, data_ptr={:?}, data_len={}", 
+        path_ptr, path_len, data_ptr, data_len);
+    
+    if path_ptr.is_null() || path_len == 0 {
+        crate::serial_println!("[SYSCALL] sys_fs_write_file: invalid path");
+        return Err(SyscallError::InvalidArgument);
+    }
+    if data_ptr.is_null() {
+        crate::serial_println!("[SYSCALL] sys_fs_write_file: null data pointer");
+        return Err(SyscallError::InvalidArgument);
+    }
+    if !is_user_pointer_valid(data_ptr, data_len) {
+        crate::serial_println!("[SYSCALL] sys_fs_write_file: invalid data pointer");
+        return Err(SyscallError::InvalidArgument);
+    }
+    
+    unsafe {
+        let path = read_user_string(path_ptr, path_len)?;
+        crate::serial_println!("[SYSCALL] sys_fs_write_file: writing {} bytes to '{}'", data_len, path);
+        let data = slice::from_raw_parts(data_ptr, data_len);
+        if crate::fs::fs_write(path, data) {
+            crate::serial_println!("[SYSCALL] sys_fs_write_file: success");
+            Ok(data_len as u64)
+        } else {
+            crate::serial_println!("[SYSCALL] sys_fs_write_file: fs_write failed");
+            Err(SyscallError::IoError)
+        }
+    }
+}
+
+fn sys_fs_delete(path_ptr: *const u8, path_len: usize) -> SyscallResult {
+    if path_ptr.is_null() || path_len == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    
+    unsafe {
+        let path = read_user_string(path_ptr, path_len)?;
+        if crate::fs::fs_delete(path) {
+            Ok(0)
+        } else {
+            Err(SyscallError::NotFound)
+        }
+    }
+}
+
+fn sys_fs_read_file(path_ptr: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> SyscallResult {
+    if path_ptr.is_null() || path_len == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    if buf.is_null() || !is_user_pointer_valid(buf, buf_len) {
+        return Err(SyscallError::InvalidArgument);
+    }
+    
+    unsafe {
+        let path = read_user_string(path_ptr, path_len)?;
+        if let Some(data) = crate::fs::fs_read(path) {
+            let copy_len = core::cmp::min(data.len(), buf_len);
+            core::ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
+            Ok(copy_len as u64)
+        } else {
+            Err(SyscallError::NotFound)
+        }
+    }
+}
+
+fn sys_fs_format() -> SyscallResult {
+    // Check if user is root
+    if let Some(pid) = get_current_pid() {
+        let table = crate::process::process_table().lock();
+        if let Some(proc) = table.get(pid) {
+            if proc.uid != 0 {
+                return Err(SyscallError::PermissionDenied);
+            }
+        }
+    }
+    
+    if crate::fs::fs_format() {
+        Ok(0)
+    } else {
+        Err(SyscallError::IoError)
+    }
+}
+
+fn sys_fs_mount() -> SyscallResult {
+    if crate::fs::fs_mount() {
+        Ok(0)
+    } else {
+        Err(SyscallError::IoError)
+    }
+}
+
+fn sys_fs_sync() -> SyscallResult {
+    crate::fs::fs_sync();
+    Ok(0)
+}
+
+// ============================================================================
+// Power Syscalls
+// ============================================================================
+
+fn sys_shutdown() -> SyscallResult {
+    // Check if user is root
+    if let Some(pid) = get_current_pid() {
+        let table = crate::process::process_table().lock();
+        if let Some(proc) = table.get(pid) {
+            if proc.uid != 0 {
+                return Err(SyscallError::PermissionDenied);
+            }
+        }
+    }
+    
+    crate::power::shutdown();
+    Ok(0)
+}
+
+fn sys_reboot() -> SyscallResult {
+    // Check if user is root
+    if let Some(pid) = get_current_pid() {
+        let table = crate::process::process_table().lock();
+        if let Some(proc) = table.get(pid) {
+            if proc.uid != 0 {
+                return Err(SyscallError::PermissionDenied);
+            }
+        }
+    }
+    
+    crate::power::reboot();
+    Ok(0)
 }

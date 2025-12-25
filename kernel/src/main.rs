@@ -240,6 +240,22 @@ pub extern "C" fn _start() -> ! {
     
     serial_println(b"[5/11] Drivers initialized");
     
+    // Mount filesystem automatically
+    serial_println(b"[5.5/11] Mounting filesystem...");
+    if crate::fs::fs_mount() {
+        serial_println(b"[5.5/11] Filesystem mounted successfully");
+        println!("      Filesystem: mounted");
+    } else {
+        serial_println(b"[5.5/11] Filesystem mount failed, formatting...");
+        if crate::fs::fs_format() {
+            serial_println(b"[5.5/11] Filesystem formatted");
+            if crate::fs::fs_mount() {
+                serial_println(b"[5.5/11] Filesystem mounted after format");
+                println!("      Filesystem: formatted and mounted");
+            }
+        }
+    }
+    
     // Test allocator
     serial_println(b"");
     serial_println(b"[6/11] Testing allocator...");

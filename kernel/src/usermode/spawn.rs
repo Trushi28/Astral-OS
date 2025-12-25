@@ -54,12 +54,24 @@ pub fn spawn_user_process(elf_data: &[u8]) -> Result<SpawnedProcess, &'static st
     // This prevents "Page already mapped" errors when segments share pages
     let mut mapped_pages: alloc::collections::BTreeMap<u64, PhysAddr> = alloc::collections::BTreeMap::new();
     
-    // Load ELF segments
+    // Load ELF segments and track highest address for heap start
+    let mut highest_addr: u64 = 0;
     for ph in header.program_headers(elf_data)? {
         if ph.p_type == PT_LOAD {
             load_segment_with_tracking(ph, elf_data, &mut user_pt, &mut mapped_pages)?;
+            let seg_end = ph.p_vaddr + ph.p_memsz;
+            if seg_end > highest_addr {
+                highest_addr = seg_end;
+            }
         }
     }
+    
+    // Calculate heap start (page-aligned, after all loaded segments + gap)
+    let heap_start = crate::util::align_up((highest_addr + 0x1000) as usize, crate::PAGE_SIZE) as u64;
+    let heap_end = heap_start; // Initially empty heap
+    let mmap_base: u64 = 0x0000_4000_0000_0000; // mmap region starts here
+    
+    crate::serial_println!("[SPAWN] Heap region: start=0x{:x}, mmap_base=0x{:x}", heap_start, mmap_base);
     
     // Allocate kernel stack for this process
     let kernel_stack = allocate_kernel_stack()?;
@@ -76,6 +88,11 @@ pub fn spawn_user_process(elf_data: &[u8]) -> Result<SpawnedProcess, &'static st
     process.kernel_stack = kernel_stack;
     process.state = ProcessState::Ready;
     process.priority = PriorityClass::Interactive;
+    
+    // Initialize heap region
+    process.heap_start = heap_start;
+    process.heap_end = heap_end;
+    process.mmap_base = mmap_base;
     
     // Set up initial register state for user mode
     process.registers.rip = entry_point;
