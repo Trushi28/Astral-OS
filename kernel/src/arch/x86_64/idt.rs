@@ -41,7 +41,13 @@ extern "x86-interrupt" fn timer_interrupt_handler(
 {
     unsafe {
         super::timer::tick();
-        super::pic::PICS.notify_end_of_interrupt(0);
+        
+        // Send EOI to APIC if available, otherwise PIC
+        if let Some(ref mut apic) = super::apic::local::LOCAL_APIC {
+            apic.end_of_interrupt();
+        } else {
+            super::pic::PICS.notify_end_of_interrupt(0);
+        }
     }
 }
 
@@ -50,7 +56,13 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
 {
     unsafe {
         super::keyboard::handle_interrupt();
-        super::pic::PICS.notify_end_of_interrupt(1);
+        
+        // Send EOI to APIC if available, otherwise PIC
+        if let Some(ref mut apic) = super::apic::local::LOCAL_APIC {
+            apic.end_of_interrupt();
+        } else {
+            super::pic::PICS.notify_end_of_interrupt(1);
+        }
     }
 }
 

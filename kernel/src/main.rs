@@ -68,7 +68,16 @@ pub extern "C" fn _start() -> ! {
     
     // NOW unmask the IRQs after interrupts are enabled
     unsafe {
-        arch::x86_64::pic::unmask_irqs();
+        // Check if using APIC or PIC
+        if arch::x86_64::apic::local::LOCAL_APIC.is_some() {
+            // Unmask APIC timer
+            arch::x86_64::apic::unmask_timer();
+            // Unmask keyboard via I/O APIC
+            arch::x86_64::apic::unmask_keyboard();
+        } else {
+            // Unmask PIC IRQs
+            arch::x86_64::pic::unmask_irqs();
+        }
     }
     
     serial_println!("[INFO] Interrupts enabled and IRQs unmasked!");

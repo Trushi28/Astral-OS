@@ -6,7 +6,7 @@ use x86_64::{
     VirtAddr, PhysAddr,
 };
 use crate::serial_println;
-use super::frame_allocator::FRAME_ALLOCATOR;
+use super::buddy::BUDDY_ALLOCATOR as FRAME_ALLOCATOR;
 
 /// Initialize a new OffsetPageTable from the level 4 table
 pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {

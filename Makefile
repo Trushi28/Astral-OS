@@ -3,7 +3,7 @@
 KERNEL := target/x86_64-unknown-none/release/astral-kernel
 ISO := astral-os.iso
 LIMINE_DIR := limine
-OVMF_PATH := /usr/share/OVMF/OVMF_CODE.fd
+OVMF_PATH := /usr/share/edk2/x64/OVMF.4m.fd
 
 all: iso
 

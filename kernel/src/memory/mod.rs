@@ -3,8 +3,13 @@ use crate::serial_println;
 use limine::request::{MemoryMapRequest, HhdmRequest};
 use x86_64::{VirtAddr, structures::paging::PageTableFlags as Flags};
 
-pub mod frame_allocator;
+pub mod buddy;  // Buddy allocator (replaced bitmap)
 pub mod paging;
+pub mod slab;   // Slab allocator statistics
+pub mod safety; // Memory safety features
+
+// Re-export for convenience
+pub use buddy::BUDDY_ALLOCATOR as FRAME_ALLOCATOR;
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
@@ -83,13 +88,24 @@ pub fn init() {
             );
         }
 
-        // Initialize frame allocator
+        // Initialize buddy allocator
         serial_println!();
-        serial_println!("[MEM] Initializing physical frame allocator...");
-        frame_allocator::FRAME_ALLOCATOR.lock().init(entries);
-
-        let (used, total) = frame_allocator::FRAME_ALLOCATOR.lock().stats();
-        serial_println!("[MEM] Frame allocator ready: {}/{} frames used", used, total);
+        serial_println!("[MEM] Initializing buddy allocator...");
+        
+        {
+            let mut buddy = buddy::BUDDY_ALLOCATOR.lock();
+            
+            // Add all usable memory regions to buddy allocator
+            for entry in entries.iter() {
+                if entry.entry_type == limine::memory_map::EntryType::USABLE {
+                    buddy.add_region(entry.base, entry.length);
+                }
+            }
+            
+            let (used, total) = buddy.stats();
+            serial_println!("[BUDDY] Allocator ready: {}/{} frames used", used, total);
+            buddy.print_stats();
+        }
         
     } else {
         serial_println!("[MEM] ERROR: No memory map available from bootloader!");
