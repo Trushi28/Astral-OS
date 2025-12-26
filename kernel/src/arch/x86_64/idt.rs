@@ -42,6 +42,9 @@ extern "x86-interrupt" fn timer_interrupt_handler(
     unsafe {
         super::timer::tick();
         
+        // Scheduler tick (for preemption)
+        crate::scheduler::timer_tick();
+        
         // Send EOI to APIC if available, otherwise PIC
         if let Some(ref mut apic) = super::apic::local::LOCAL_APIC {
             apic.end_of_interrupt();

@@ -161,6 +161,26 @@ pub unsafe fn init() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Initialize Local APIC on an Application Processor
+pub unsafe fn init_ap(cpu_id: u32) {
+    serial_println!("[APIC] Initializing Local APIC on CPU {}...", cpu_id);
+    
+    // Enable APIC in MSR
+    let mut apic_base = msr::rdmsr(msr::IA32_APIC_BASE_MSR);
+    apic_base |= 1 << 11; // Set APIC Global Enable
+    msr::wrmsr(msr::IA32_APIC_BASE_MSR, apic_base);
+    
+    // Get base address and enable APIC
+    let apic_base_msr = msr::rdmsr(msr::IA32_APIC_BASE_MSR);
+    let base_addr = x86_64::VirtAddr::new(apic_base_msr & 0xFFFF_FFFF_F000);
+    
+    // Read APIC ID register to verify
+    let addr = (base_addr.as_u64() + 0x20) as *const u32;
+    let apic_id = read_volatile(addr) >> 24;
+    
+    serial_println!("[APIC] CPU {} Local APIC ready (ID: {})", cpu_id, apic_id);
+}
+
 pub unsafe fn end_of_interrupt() {
     if let Some(ref mut apic) = LOCAL_APIC {
         apic.end_of_interrupt();

@@ -7,6 +7,7 @@ pub mod timer;
 pub mod keyboard;
 pub mod msr;   // MSR access for APIC
 pub mod apic;  // Modern APIC
+pub mod smp;   // Symmetric Multiprocessing
 
 pub fn init() {
     gdt::init();
@@ -15,7 +16,11 @@ pub fn init() {
     // Try APIC first, fall back to PIC if unavailable
     let use_apic = unsafe {
         match apic::init() {
-            Ok(_) => true,
+            Ok(_) => {
+                // Initialize SMP after APIC is ready
+                smp::init();
+                true
+            },
             Err(e) => {
                 serial_println!("[WARN] APIC init failed: {}, falling back to PIC", e);
                 pic::init();

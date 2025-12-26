@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
+#![feature(panic_info_message)]
 #![feature(abi_x86_interrupt)]
+#![feature(naked_functions)]
 
 extern crate alloc;
 
@@ -8,6 +10,9 @@ extern crate alloc;
 mod output;
 mod arch;
 mod memory;
+mod process;
+mod scheduler;
+mod syscall;
 
 use core::panic::PanicInfo;
 use limine::request::FramebufferRequest;
@@ -39,6 +44,46 @@ pub extern "C" fn _start() -> ! {
     // Initialize memory
     memory::init();
     serial_println!("[OK] Memory management initialized");
+    
+    // Initialize scheduler
+    let cpu_count = arch::x86_64::smp::cpu_count();
+    scheduler::init(cpu_count as usize);
+    serial_println!("[OK] Scheduler initialized for {} CPUs", cpu_count);
+    
+    // Initialize syscall interface
+    unsafe {
+        syscall::init();
+    }
+    serial_println!("[OK] Syscall interface ready");
+    
+    // Create demo kernel threads to test scheduler
+    fn thread1() -> ! {
+        loop {
+            serial_println!("[THREAD 1] Hello from high priority thread!");
+            for _ in 0..100000 { x86_64::instructions::nop(); }
+        }
+    }
+    
+    fn thread2() -> ! {
+        loop {
+            serial_println!("[THREAD 2] Hello from normal priority thread!");
+            for _ in 0..100000 { x86_64::instructions::nop(); }
+        }
+    }
+    
+    fn thread3() -> ! {
+        loop {
+            serial_println!("[THREAD 3] Hello from low priority thread!");
+            for _ in 0..100000 { x86_64::instructions::nop(); }
+        }
+    }
+    
+    // Spawn demo threads
+    process::spawn::spawn_kernel_thread(thread1, process::Priority::High);
+    process::spawn::spawn_kernel_thread(thread2, process::Priority::Normal);
+    process::spawn::spawn_kernel_thread(thread3, process::Priority::Low);
+    
+    serial_println!("[OK] Created 3 demo kernel threads");
     
     // Print beautiful boot banner to framebuffer
     fb_println!("+========================================+");
@@ -81,11 +126,27 @@ pub extern "C" fn _start() -> ! {
     }
     
     serial_println!("[INFO] Interrupts enabled and IRQs unmasked!");
-    serial_println!("[INFO] Entering idle loop...\n");
-    serial_println!("[INFO] Try typing on the keyboard!\n");
+    serial_println!("[INFO] Starting scheduler...\n");
     
-    // Kernel idle loop
+    // Main scheduler loop - run processes!
     loop {
+        unsafe {
+            // Try to schedule a process
+            if let Some(ref sched) = *scheduler::SCHEDULER.lock() {
+                // Get current CPU ID (for now, assume CPU 0)
+                let cpu_id = 0;
+                
+                if let Some(process) = sched.schedule(cpu_id) {
+                    serial_println!("[SCHED] Running process PID {}", process.pid.as_u32());
+                    
+                    // Context switching handled by timer interrupt preemption
+                    // Process will run when we return to user mode
+                    sched.set_current(cpu_id, Some(process));
+                }
+            }
+        }
+        
+        // Yield to allow interrupts
         x86_64::instructions::hlt();
     }
 }
