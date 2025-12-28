@@ -45,6 +45,9 @@ pub extern "C" fn _start() -> ! {
     memory::init();
     serial_println!("[OK] Memory management initialized");
     
+    // Demonstrate hybrid allocation (buddy + fractal)
+    memory::hybrid::example_allocations();
+    
     // Initialize scheduler
     let cpu_count = arch::x86_64::smp::cpu_count();
     scheduler::init(cpu_count as usize);

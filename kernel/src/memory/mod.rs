@@ -7,6 +7,9 @@ pub mod buddy;  // Buddy allocator (replaced bitmap)
 pub mod paging;
 pub mod slab;   // Slab allocator statistics
 pub mod safety; // Memory safety features
+pub mod fractal; // Fractal memory regions
+pub mod fractal_allocator; // Fractal allocator
+pub mod hybrid; // Hybrid buddy+fractal interface
 
 // Re-export for convenience
 pub use buddy::BUDDY_ALLOCATOR as FRAME_ALLOCATOR;
@@ -149,6 +152,21 @@ pub fn init() {
         
     } else {
         serial_println!("[MEM] ERROR: No HHDM response from bootloader!");
+    }
+    
+    // Initialize fractal memory system
+    let fractal_base = VirtAddr::new(0x5555_5555_0000);
+    let fractal_size = 16 * 1024 * 1024 * 1024; // 16GB
+    
+    fractal_allocator::init(fractal_base, fractal_size);
+    
+    // Split universe into galaxies
+    if let Some(ref mut allocator) = *fractal_allocator::FRACTAL_ALLOCATOR.lock() {
+        let root_id = allocator.root().id;
+        
+        if let Ok(galaxy_ids) = allocator.fractal_split(root_id, 4) {
+            serial_println!("[FRACTAL] Created {} galaxies", galaxy_ids.len());
+        }
     }
     
     serial_println!("[MEM] Phase 2: Memory management complete!");
