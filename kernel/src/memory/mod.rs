@@ -10,6 +10,7 @@ pub mod safety; // Memory safety features
 pub mod fractal; // Fractal memory regions
 pub mod fractal_allocator; // Fractal allocator
 pub mod hybrid; // Hybrid buddy+fractal interface
+pub mod user_memory; // User address space management
 
 // Re-export for convenience
 pub use buddy::BUDDY_ALLOCATOR as FRAME_ALLOCATOR;
@@ -144,6 +145,9 @@ pub fn init() {
             ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE);
         }
         serial_println!("[MEM] Heap allocator initialized at {:#x}", HEAP_START);
+        
+        // Initialize user memory module
+        user_memory::init(physical_memory_offset);
         
         // Test allocation
         let test_vec = alloc::vec![1, 2, 3, 4, 5];

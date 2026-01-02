@@ -3,6 +3,12 @@
 pub const IA32_APIC_BASE_MSR: u32 = 0x1B;
 pub const IA32_X2APIC_APICID: u32 = 0x802;
 
+// SYSCALL/SYSRET MSRs
+pub const IA32_STAR: u32 = 0xC0000081;       // Segment selectors
+pub const IA32_LSTAR: u32 = 0xC0000082;      // Long mode SYSCALL entry
+pub const IA32_CSTAR: u32 = 0xC0000083;      // Compatibility mode (unused)
+pub const IA32_FMASK: u32 = 0xC0000084;      // RFLAGS mask
+
 /// Read from a Model Specific Register
 #[inline]
 pub unsafe fn rdmsr(msr: u32) -> u64 {

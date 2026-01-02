@@ -1,0 +1,1 @@
+{"rustc":1238161748008792721,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[7648903741785607723,"build_script_build",false,6913889608539338655]],"local":[{"RerunIfChanged":{"output":"x86_64-astral-user/release/build/compiler_builtins-4595eb930cbb21c2/output","paths":["build.rs","configure.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

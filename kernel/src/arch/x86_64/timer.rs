@@ -47,8 +47,9 @@ pub unsafe fn tick() {
     TICK_COUNT += 1;
     
     // Print every second (100 ticks at 100 Hz)
+    // Print every second (100 ticks at 100 Hz)
     if TICK_COUNT % 100 == 0 {
-        serial_println!("[TIMER] Tick: {} ({} seconds)", TICK_COUNT, TICK_COUNT / 100);
+        // serial_println!("[TIMER] Tick: {} ({} seconds)", TICK_COUNT, TICK_COUNT / 100);
     }
 }
 

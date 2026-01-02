@@ -1,4 +1,4 @@
-.PHONY: all clean run build iso
+.PHONY: all clean run build iso userspace
 
 KERNEL := target/x86_64-unknown-none/release/astral-kernel
 ISO := astral-os.iso
@@ -11,7 +11,12 @@ build:
 	@echo "🔨 Building Astral OS kernel..."
 	cd kernel && cargo build --release
 
-iso: build
+userspace:
+	@echo "🔨 Building Userspace..."
+	cd userspace && cargo build --release --target x86_64-astral-user.json
+	@cp userspace/target/x86_64-astral-user/release/hello kernel/hello.elf
+
+iso: build userspace
 	@echo "📀 Creating bootable ISO..."
 	@mkdir -p iso_root/boot/limine
 	@cp $(KERNEL) iso_root/boot/kernel.elf

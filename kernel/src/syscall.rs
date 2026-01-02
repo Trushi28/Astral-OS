@@ -1,5 +1,6 @@
 use crate::process::{ProcessId, Priority};
 use crate::serial_println;
+use crate::arch::x86_64::msr;
 
 /// Syscall numbers (Linux-compatible where possible)
 #[repr(u64)]
@@ -21,27 +22,148 @@ pub enum SyscallError {
     PermissionDenied = -13, // EACCES
 }
 
+/// Syscall entry point (called from assembly)
+/// 
+/// ABI: RAX=syscall#, RDI=arg1, RSI=arg2, RDX=arg3, R10=arg4, R8=arg5, R9=arg6
+#[no_mangle]
+pub extern "C" fn syscall_entry(
+    syscall_num: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+) -> i64 {
+    handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, 0)
+}
+
 /// Initialize syscall interface
 /// Sets up MSRs for syscall/sysret
 pub unsafe fn init() {
-    // Syscalls use int 0x80 method (legacy but simple)
-    // Modern syscall instruction would require MSR configuration
+    // Kernel CS = 0x08 (index 1)
+    // Kernel SS = 0x10 (index 2)  
+    // User CS = 0x23 (index 4, RPL=3)
+    // User SS = 0x1b (index 3, RPL=3)
+    //
+    // STAR MSR layout:
+    // bits 63:48 = SYSRET CS and SS (add 16 to get SS, add 8 to get 64-bit CS)
+    //              For user: base selector should be 0x1B (user data), then:
+    //              64-bit mode: CS = base + 16 = 0x2B... wait, that's wrong
+    //              Actually SYSRET: CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
+    // bits 47:32 = SYSCALL CS and SS (SS = CS + 8)
+    //
+    // For SYSRET to work correctly:
+    // STAR[63:48] should be (USER_DATA_SELECTOR - 8) for 64-bit
+    // But x86-64 SYSRET: CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
+    // So: STAR[63:48] = 0x1B - 8 = 0x13... but actually need:
+    //   User CS = 0x23, so STAR[63:48] + 16 = 0x23, means STAR[63:48] = 0x13
+    //   User SS = STAR[63:48] + 8 = 0x1B ✓
+    //
+    // For SYSCALL:
+    // STAR[47:32] = Kernel CS = 0x08
+    // Kernel SS = STAR[47:32] + 8 = 0x10 ✓
     
-    serial_println!("[SYSCALL] Interface initialized (int 0x80 method)");
+    let star_value: u64 = 
+        (0x13u64 << 48) |  // SYSRET base (user): CS=0x23=base+16, SS=0x1B=base+8
+        (0x08u64 << 32);   // SYSCALL target (kernel): CS=0x08, SS=0x10
+    
+    msr::wrmsr(msr::IA32_STAR, star_value);
+    
+    // LSTAR = 64-bit SYSCALL entry point
+    msr::wrmsr(msr::IA32_LSTAR, syscall_handler as u64);
+    
+    // FMASK = RFLAGS mask (clear TF, IF, DF on syscall)
+    // Clear: TF(8), IF(9), DF(10) = 0x700
+    msr::wrmsr(msr::IA32_FMASK, 0x700);
+    
+    // Enable SYSCALL instruction (already enabled on most CPUs)
+    // IA32_EFER.SCE (bit 0) should be set
+    const IA32_EFER: u32 = 0xC0000080;
+    let efer = msr::rdmsr(IA32_EFER);
+    msr::wrmsr(IA32_EFER, efer | 1); // Set SCE bit
+    
+    serial_println!("[SYSCALL] STAR={:#x}, LSTAR={:#x}", star_value, syscall_handler as u64);
+    serial_println!("[SYSCALL] Interface initialized (SYSCALL instruction method)");
 }
 
+/// Syscall handler (naked function for assembly entry)
+#[unsafe(naked)]
+unsafe extern "C" fn syscall_handler() -> ! {
+    core::arch::naked_asm!(
+        // On entry from SYSCALL:
+        // - RCX = user RIP (return address)
+        // - R11 = user RFLAGS
+        // - RSP = still user stack (we must switch!)
+        // - Interrupts are disabled (IF cleared by FMASK)
+        
+        // Save user stack pointer
+        "mov r15, rsp",
+        
+        // Switch to kernel stack
+        // Compute stack top = SYSCALL_STACK base + 16384 (16KB)
+        "lea rsp, [rip + SYSCALL_STACK + 16384]",
+        
+        // Save user state
+        "push r15",         // User RSP
+        "push r11",         // User RFLAGS  
+        "push rcx",         // User RIP
+        
+        // Save callee-saved registers used by syscall
+        "push rbp",
+        "push rbx",
+        "push r12",
+        "push r13",
+        "push r14",
+        
+        // Arguments already in correct registers for C ABI:
+        // RDI = arg1 ✓
+        // RSI = arg2 ✓
+        // RDX = arg3 ✓
+        // R10 = arg4 (need to move to RCX for C ABI)
+        // R8 = arg5 ✓
+        // R9 = arg6 ✓
+        // RAX = syscall number (need to move to first arg)
+        
+        // Rearrange for C call: fn(syscall_num, arg1, arg2, arg3, arg4, arg5)
+        "mov r9, r8",       // arg5 -> r9
+        "mov r8, r10",      // arg4 -> r8
+        "mov rcx, rdx",     // arg3 -> rcx
+        "mov rdx, rsi",     // arg2 -> rdx
+        "mov rsi, rdi",     // arg1 -> rsi
+        "mov rdi, rax",     // syscall_num -> rdi
+        
+        // Call Rust handler
+        "call syscall_entry",
+        
+        // Return value in RAX
+        
+        // Restore registers
+        "pop r14",
+        "pop r13", 
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        
+        // Restore user state
+        "pop rcx",          // User RIP -> RCX for SYSRET
+        "pop r11",          // User RFLAGS -> R11 for SYSRET
+        "pop rsp",          // User RSP
+        
+        // Return to userspace
+        "sysretq",
+    )
+}
+
+// Kernel stack for syscall handler (16KB, 16-byte aligned)
+#[repr(C, align(16))]
+pub struct SyscallStack {
+    data: [u8; 4096 * 4],
+}
+
+#[no_mangle]
+pub static mut SYSCALL_STACK: SyscallStack = SyscallStack { data: [0; 4096 * 4] };
+
 /// Handle syscall from userspace
-/// 
-/// Arguments (Linux x86-64 ABI):
-/// - RAX: syscall number
-/// - RDI: arg1
-/// - RSI: arg2
-/// - RDX: arg3
-/// - R10: arg4 (not RCX, which holds return address)
-/// - R8: arg5
-/// - R9: arg6
-/// 
-/// Return: RAX (0 or positive = success, negative = -errno)
 pub fn handle_syscall(
     syscall_num: u64,
     arg1: u64,
@@ -61,7 +183,7 @@ pub fn handle_syscall(
         // sys_getpid()
         39 => sys_getpid(),
         
-        // sys_clone(fn_ptr, stack_ptr, flags) - **THREAD CREATION**
+        // sys_clone(fn_ptr, stack_ptr, flags)
         56 => sys_clone(arg1, arg2, arg3),
         
         // sys_yield()
@@ -75,92 +197,48 @@ pub fn handle_syscall(
 }
 
 /// sys_exit - Terminate current process
-/// 
-/// Properly cleans up resources:
-/// - Marks process as DEAD
-/// - Frees stack memory
-/// - Removes from scheduler
-/// - Switches to next process
 fn sys_exit(code: i32) -> i64 {
     serial_println!("[SYSCALL] exit({}) - Process terminating", code);
+    serial_println!("[EXIT] User process exited cleanly! Halting...");
+    serial_println!("[SYSTEM] User execution complete. Safe to shutdown.");
     
-    // Single-CPU assumed for now (multicore requires per-CPU tracking)
-    let cpu_id = 0;
+    // NOTE: We're still in user page table context, so we can't access
+    // kernel heap structures like SCHEDULER or STACK_POOL safely.
+    // For now, just halt. Proper implementation would switch CR3 first
+    // or have cleanup code in a context that has access to kernel memory.
     
-    // Cleanup current process
-    if let Some(ref sched) = *crate::scheduler::SCHEDULER.lock() {
-        if let Some(mut process) = sched.current(cpu_id) {
-            serial_println!("[EXIT] Cleaning up PID {}", process.pid.as_u32());
-            
-            // Mark as dead
-            process.state = crate::process::ProcessState::Dead;
-            
-            // Free stack
-            {
-                let mut pool = crate::process::stack_pool::STACK_POOL.lock();
-                pool.free(process.kernel_stack);
-                serial_println!("[EXIT] Freed stack for PID {}", process.pid.as_u32());
-            }
-            
-            // Clear current process
-            sched.set_current(cpu_id, None);
-            
-            serial_println!("[EXIT] PID {} cleanup complete", process.pid.as_u32());
-        }
-    }
-    
-    // After cleanup, halt CPU (proper impl would switch to next process)
-    unsafe {
-        loop {
-            x86_64::instructions::hlt();
-        }
+    loop {
+        x86_64::instructions::hlt();
     }
 }
 
 /// sys_write - Write to file descriptor
-/// For now, only supports stdout (fd=1) and stderr (fd=2) to serial
-/// 
-/// Full implementation needs:
-/// - VFS layer for file operations
-/// - Userspace memory validation
-/// - Proper error handling
 fn sys_write(fd: i32, buf_ptr: usize, len: usize) -> i64 {
     if fd != 1 && fd != 2 {
         return SyscallError::InvalidArgument as i64;
     }
     
-    // Validation skipped - full impl requires VFS
-    // Buffer writing deferred to filesystem implementation
-    serial_println!("[SYSCALL] write(fd={}, len={}) - stub implementation", fd, len);
+    // TODO: Validate user pointer
+    // For now, just print to serial
+    let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+    if let Ok(s) = core::str::from_utf8(buf) {
+        crate::serial_print!("{}", s);
+    }
     
-    len as i64 // Return bytes "written"
+    len as i64
 }
 
 /// sys_getpid - Get current process ID
 fn sys_getpid() -> i64 {
-    // Current process PID requires per-CPU tracking
     serial_println!("[SYSCALL] getpid()");
-    1 // Placeholder PID
+    1
 }
 
-/// sys_clone - Create a new thread/process (CRITICAL for applications!)
-/// 
-/// This is how userspace applications create threads!
-/// 
-/// Args:
-/// - fn_ptr: Entry point for new thread
-/// - stack_ptr: Stack pointer for new thread
-/// - flags: Clone flags (CLONE_VM for threads, etc.)
-/// 
-/// Returns: PID of new thread, or negative errno
+/// sys_clone - Create a new thread/process
 fn sys_clone(fn_ptr: u64, stack_ptr: u64, flags: u64) -> i64 {
     serial_println!("[SYSCALL] clone(fn={:#x}, stack={:#x}, flags={:#x})", fn_ptr, stack_ptr, flags);
     
-    // Kernel thread creation (userspace requires page table isolation)
-    
-    // Create wrapper function that jumps to user entry point
     fn thread_wrapper() -> ! {
-        // Userspace context setup deferred (needs Ring 3 transition)
         loop {
             x86_64::instructions::hlt();
         }
@@ -173,9 +251,8 @@ fn sys_clone(fn_ptr: u64, stack_ptr: u64, flags: u64) -> i64 {
     pid.as_u32() as i64
 }
 
-/// sys_yield - Voluntarily yield CPU to scheduler
+/// sys_yield - Voluntarily yield CPU
 fn sys_yield() -> i64 {
     serial_println!("[SYSCALL] yield()");
-    // Context switch triggered by next timer interrupt
     0
 }

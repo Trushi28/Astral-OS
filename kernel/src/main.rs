@@ -3,6 +3,7 @@
 #![feature(panic_info_message)]
 #![feature(abi_x86_interrupt)]
 #![feature(naked_functions)]
+#![feature(never_type)]
 
 extern crate alloc;
 
@@ -13,6 +14,7 @@ mod memory;
 mod process;
 mod scheduler;
 mod syscall;
+mod elf;
 
 use core::panic::PanicInfo;
 use limine::request::FramebufferRequest;
@@ -129,6 +131,26 @@ pub extern "C" fn _start() -> ! {
     }
     
     serial_println!("[INFO] Interrupts enabled and IRQs unmasked!");
+    
+    // === Phase 4.6: Test Userspace Execution ===
+    serial_println!("\n[TEST] === Phase 4.6: ELF Loader Test ===");
+    
+    // Embed the userspace hello program
+    static HELLO_ELF: &[u8] = include_bytes!("../hello.elf");
+    
+    serial_println!("[TEST] Embedded hello.elf: {} bytes", HELLO_ELF.len());
+    
+    // Execute the userspace program
+    // This will jump to Ring 3 and not return (on success)
+    unsafe {
+        match elf::exec_elf(HELLO_ELF) {
+            Ok(_) => unreachable!(), // exec_elf never returns on success
+            Err(e) => {
+                serial_println!("[TEST] ELF execution failed: {}", e);
+            }
+        }
+    }
+    
     serial_println!("[INFO] Starting scheduler...\n");
     
     // Main scheduler loop - run processes!
